@@ -74,6 +74,10 @@ scope yet.
   word, STT, intent matching, and TTS all confirmed working.
 - Run with: `.venv\Scripts\python -m resort_atv_voice.main` (needs
   headphones connected, package installed via `pip install -e .`).
+- **Version control:** git repo initialized 2026-08-05, initial commit
+  made. Git identity (`spurgensam14@gmail.com` / "Spurgen") set
+  **local to this repo only** (not `--global`), at the user's explicit
+  request.
 
 ## Open questions (not yet decided)
 
@@ -83,7 +87,6 @@ scope yet.
   eventually — single onboard unit vs. distributed mics/speakers — not
   addressed by the laptop prototype.
 - A real, resort/vehicle-branded wake word.
-- Not yet a git repo — no version control on this work yet.
 
 ## Unrelated sibling project — do not confuse
 
