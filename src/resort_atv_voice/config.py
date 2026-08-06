@@ -20,6 +20,11 @@ CHUNK_SIZE_CHARS = 800
 CHUNK_OVERLAP_CHARS = 100
 TOP_K_CHUNKS = 5
 
+# Short-term conversational memory, reset each time the assistant goes
+# back to sleep. Kept small so the prompt doesn't grow unbounded across
+# a long back-and-forth.
+MAX_HISTORY_TURNS = 4
+
 RAG_SYSTEM_PROMPT = """You are the voice of a resort ATV - a friendly,
 easygoing companion for the guest riding you, not a generic assistant.
 Speak warmly and conversationally, like a knowledgeable friend, but keep
@@ -46,12 +51,23 @@ PIPER_VOICE_PATH = MODELS_DIR / "en_GB-cori-high.onnx"
 
 SAMPLE_RATE = 16000
 
+# Spoken once, right after models finish loading - a companion should
+# announce itself, not just silently sit ready in a terminal.
+STARTUP_GREETING = "Hey, I'm up and ready to help with your ride."
+
 # Wake-word acknowledgment chime: a short tone played immediately on
 # detection, before recording/the cloud round-trip, so there's audio
 # feedback while the (noticeably slower, V2) answer is being fetched.
 CHIME_FREQUENCY_HZ = 1000
 CHIME_DURATION_MS = 250
 CHIME_VOLUME = 0.7
+
+# Sleep chime: a descending two-tone played when the follow-up window
+# times out silently, so it's clear (without speaking) that the
+# assistant has stopped listening - the mirror image of the ack chime.
+SLEEP_CHIME_FREQUENCY_HZ = (700, 450)
+SLEEP_CHIME_DURATION_MS = 130
+SLEEP_CHIME_VOLUME = 0.6
 
 # Query capture: record until trailing silence, bounded by a max duration and
 # a timeout waiting for speech to start (in case the query got clipped or

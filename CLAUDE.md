@@ -273,6 +273,52 @@ Follow-up work making the assistant feel less like a demo, prompted by
   does produce multiple same-sample-rate chunks) before fixing, rather
   than guessing.
 
+## V2 companion polish, round 2 (2026-08-06)
+
+User asked for ideas on making it feel more like a companion, reviewed
+them, and picked four to build (explicitly deferred: giving it a name,
+proactive/unprompted check-ins — bigger scope, not done):
+
+- **Small talk.** New `small_talk.py` — `try_small_talk_answer()`
+  keyword-matches greetings, thanks, and identity/capability questions
+  ("who are you," "what can you do") and answers them directly,
+  checked at the top of `rag.answer_query()` *before* touching Gemini
+  at all. Without this, "thanks" was falling through to the document
+  search and getting the honest-but-jarring "I couldn't find that
+  information" refusal. Verified live: small talk gets answered with
+  no Gemini API call made (confirmed by the absence of the SDK's
+  response warning in the log for those turns).
+- **Short-term conversational memory.** `answer_query()` gained a
+  `history` parameter (list of prior (question, answer) pairs,
+  capped at `MAX_HISTORY_TURNS = 4`), formatted into the generation
+  prompt so follow-ups like "what about the tire pressure too?"
+  resolve correctly. Reset every wake-word cycle in `main.py` — it's
+  memory for one conversation, not persistent. Note: only the
+  *generation* step sees history, not retrieval — with a single
+  document in the corpus this doesn't matter yet, but a genuinely
+  pronoun-only follow-up ("what about that?") could retrieve the
+  wrong chunk once there are multiple documents. Known limitation, not
+  yet a problem.
+- **Spoken startup greeting.** `STARTUP_GREETING` in `config.py`,
+  spoken once right after models finish loading, before "Say the wake
+  word." A companion should announce itself, not sit silently in a
+  terminal.
+- **Sleep chime.** `tts.play_sleep_chime()` — a descending two-tone
+  (700Hz → 450Hz, mirroring the single-tone ack chime), played when
+  the follow-up window times out silently, so it's audibly clear the
+  assistant stopped listening even though nothing gets said. Tone
+  generation in `tts.py` was refactored into a shared `_generate_tone()`
+  helper used by both chimes.
+- **Bug found via live use, not testing: compound-question fallback
+  gap.** A real Gemini 503 (server overload) happened live during
+  testing of the above. The offline fallback correctly caught it and
+  answered — but the question asked for *both* battery and speed, and
+  `try_local_answer()` only returned the first matching stat, silently
+  dropping the rest. Fixed: it now collects every matching fact and
+  joins them into one natural sentence instead of returning on the
+  first match. Verified against the exact question that surfaced the
+  bug, plus single-fact, all-four-facts, and no-match cases.
+
 ## V1 vs V2 at a glance
 
 Wake word, STT, TTS, and silence-based query capture are unchanged

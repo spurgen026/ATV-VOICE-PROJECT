@@ -8,7 +8,23 @@ from .config import (
     CHIME_VOLUME,
     PIPER_VOICE_PATH,
     SAMPLE_RATE,
+    SLEEP_CHIME_DURATION_MS,
+    SLEEP_CHIME_FREQUENCY_HZ,
+    SLEEP_CHIME_VOLUME,
 )
+
+
+def _generate_tone(frequency_hz: float, duration_ms: float, volume: float) -> np.ndarray:
+    num_samples = int(SAMPLE_RATE * duration_ms / 1000)
+    t = np.linspace(0, duration_ms / 1000, num_samples, endpoint=False)
+    tone = volume * np.sin(2 * np.pi * frequency_hz * t)
+
+    fade_samples = max(1, int(num_samples * 0.1))
+    envelope = np.ones(num_samples)
+    envelope[:fade_samples] = np.linspace(0, 1, fade_samples)
+    envelope[-fade_samples:] = np.linspace(1, 0, fade_samples)
+
+    return (tone * envelope).astype(np.float32)
 
 
 def load_voice() -> PiperVoice:
@@ -32,13 +48,19 @@ def play_ack_chime() -> None:
     """Plays a short tone right on wake-word detection, so there's
     immediate audio feedback while the slower recording + cloud
     round-trip happens."""
-    num_samples = int(SAMPLE_RATE * CHIME_DURATION_MS / 1000)
-    t = np.linspace(0, CHIME_DURATION_MS / 1000, num_samples, endpoint=False)
-    tone = CHIME_VOLUME * np.sin(2 * np.pi * CHIME_FREQUENCY_HZ * t)
+    tone = _generate_tone(CHIME_FREQUENCY_HZ, CHIME_DURATION_MS, CHIME_VOLUME)
+    sd.play(tone, samplerate=SAMPLE_RATE, blocking=True)
 
-    fade_samples = max(1, int(num_samples * 0.1))
-    envelope = np.ones(num_samples)
-    envelope[:fade_samples] = np.linspace(0, 1, fade_samples)
-    envelope[-fade_samples:] = np.linspace(1, 0, fade_samples)
 
-    sd.play((tone * envelope).astype(np.float32), samplerate=SAMPLE_RATE, blocking=True)
+def play_sleep_chime() -> None:
+    """Plays a descending two-tone when the follow-up window times out
+    silently, so it's audibly clear the assistant stopped listening even
+    though nothing gets said."""
+    high, low = SLEEP_CHIME_FREQUENCY_HZ
+    tones = np.concatenate(
+        [
+            _generate_tone(high, SLEEP_CHIME_DURATION_MS, SLEEP_CHIME_VOLUME),
+            _generate_tone(low, SLEEP_CHIME_DURATION_MS, SLEEP_CHIME_VOLUME),
+        ]
+    )
+    sd.play(tones, samplerate=SAMPLE_RATE, blocking=True)
