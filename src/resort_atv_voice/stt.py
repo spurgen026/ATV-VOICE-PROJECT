@@ -16,7 +16,6 @@ from .config import (
 
 CHUNK_SAMPLES = int(SAMPLE_RATE * QUERY_CHUNK_MS / 1000)
 SILENCE_CHUNKS_TO_STOP = QUERY_TRAILING_SILENCE_MS // QUERY_CHUNK_MS
-SPEECH_TIMEOUT_CHUNKS = QUERY_SPEECH_TIMEOUT_MS // QUERY_CHUNK_MS
 MAX_CHUNKS = QUERY_MAX_MS // QUERY_CHUNK_MS
 
 
@@ -26,10 +25,13 @@ def load_model() -> WhisperModel:
     )
 
 
-def record_query() -> np.ndarray:
-    """Records from the default input device after the wake word fires, stopping
-    once trailing silence is detected. Gives up if speech never starts, or after
-    QUERY_MAX_MS regardless, so a stuck mic can't hang the assistant forever."""
+def record_query(speech_timeout_ms: int = QUERY_SPEECH_TIMEOUT_MS) -> np.ndarray:
+    """Records from the default input device, stopping once trailing silence
+    is detected. Gives up if speech never starts within speech_timeout_ms, or
+    after QUERY_MAX_MS regardless, so a stuck mic can't hang the assistant
+    forever. A shorter speech_timeout_ms is used for the post-answer
+    follow-up window vs. the initial post-wake-word listen."""
+    speech_timeout_chunks = speech_timeout_ms // QUERY_CHUNK_MS
     chunks = []
     speech_started = False
     silence_run = 0
@@ -49,7 +51,7 @@ def record_query() -> np.ndarray:
                 chunks.append(frame)
                 if silence_run >= SILENCE_CHUNKS_TO_STOP:
                     break
-            elif chunks_read >= SPEECH_TIMEOUT_CHUNKS:
+            elif chunks_read >= speech_timeout_chunks:
                 break
 
     if not chunks:

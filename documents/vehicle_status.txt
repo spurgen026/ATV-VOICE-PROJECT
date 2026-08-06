@@ -1,0 +1,4 @@
+Battery level: 78 percent.
+Motor temperature: 42 degrees Celsius.
+Current speed: 0 kilometers per hour.
+Tire pressure: 32 psi.

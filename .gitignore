@@ -5,3 +5,5 @@ __pycache__/
 models/*.onnx
 models/*.onnx.json
 .claude/settings.local.json
+.env
+index/
