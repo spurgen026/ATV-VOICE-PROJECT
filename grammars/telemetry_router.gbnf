@@ -1,0 +1,6 @@
+root ::= telemetry-action | chat-action
+
+telemetry-action ::= "{\"action\": \"get_telemetry\", \"target\": \"" target "\"}"
+target ::= "battery_percent" | "motor_temp_c" | "speed_kmh" | "tire_pressure_psi"
+
+chat-action ::= "{\"action\": \"chat\"}"

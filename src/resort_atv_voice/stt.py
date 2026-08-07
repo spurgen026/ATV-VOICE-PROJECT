@@ -3,6 +3,7 @@ import sounddevice as sd
 from faster_whisper import WhisperModel
 
 from .config import (
+    DEFAULT_LANGUAGE,
     QUERY_CHUNK_MS,
     QUERY_MAX_MS,
     QUERY_SILENCE_RMS_THRESHOLD,
@@ -61,8 +62,14 @@ def record_query(speech_timeout_ms: int = QUERY_SPEECH_TIMEOUT_MS) -> np.ndarray
     return audio_int16.astype(np.float32) / 32768.0
 
 
-def transcribe(model: WhisperModel, audio: np.ndarray) -> str:
+def transcribe(model: WhisperModel, audio: np.ndarray) -> tuple[str, str]:
+    """Returns (text, language_code). language_code drives which response
+    templates/TTS voice get used downstream, so callers need it, not just
+    the text."""
     if audio.size == 0:
-        return ""
-    segments, _ = model.transcribe(audio, language="en")
-    return " ".join(segment.text.strip() for segment in segments).strip()
+        return "", DEFAULT_LANGUAGE
+    # language=None: auto-detect per utterance (V3 trilingual requirement -
+    # Tamil/English/Hindi with no manual mode switch).
+    segments, info = model.transcribe(audio, language=None)
+    text = " ".join(segment.text.strip() for segment in segments).strip()
+    return text, info.language

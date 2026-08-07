@@ -20,8 +20,8 @@ def try_small_talk_answer(question: str) -> Optional[str]:
     if any(phrase in text for phrase in CAPABILITY):
         return (
             "I can tell you about your vehicle - battery, motor temperature, "
-            "speed, tire pressure - and answer anything from the documents "
-            "loaded on board."
+            "speed, tire pressure - and chat about anything else, all "
+            "without needing an internet connection."
         )
 
     if any(phrase in text for phrase in IDENTITY):

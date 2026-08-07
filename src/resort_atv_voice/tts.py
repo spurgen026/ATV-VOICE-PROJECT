@@ -1,11 +1,15 @@
 import numpy as np
 import sounddevice as sd
+import torch
 from piper import PiperVoice
+from transformers import AutoTokenizer, VitsModel
 
 from .config import (
     CHIME_DURATION_MS,
     CHIME_FREQUENCY_HZ,
     CHIME_VOLUME,
+    DEFAULT_LANGUAGE,
+    MMS_TTS_MODEL_REPOS,
     PIPER_VOICE_PATH,
     SAMPLE_RATE,
     SLEEP_CHIME_DURATION_MS,
@@ -27,11 +31,28 @@ def _generate_tone(frequency_hz: float, duration_ms: float, volume: float) -> np
     return (tone * envelope).astype(np.float32)
 
 
-def load_voice() -> PiperVoice:
-    return PiperVoice.load(str(PIPER_VOICE_PATH))
+class VoiceBundle:
+    """English via Piper (kept from V1/V2), Hindi/Tamil via MMS-TTS
+    (V3 Phase 5 - Piper's own voice catalog has zero Tamil voices and
+    Kokoro-82M/MeloTTS cover neither language, confirmed by checking
+    each catalog directly rather than assuming)."""
+
+    def __init__(self, piper_voice: PiperVoice, mms_models: dict):
+        self.piper_voice = piper_voice
+        self.mms_models = mms_models  # {language: (VitsModel, tokenizer)}
 
 
-def speak(voice: PiperVoice, text: str) -> None:
+def load_voices() -> VoiceBundle:
+    piper_voice = PiperVoice.load(str(PIPER_VOICE_PATH))
+    mms_models = {}
+    for language, repo_id in MMS_TTS_MODEL_REPOS.items():
+        model = VitsModel.from_pretrained(repo_id)
+        tokenizer = AutoTokenizer.from_pretrained(repo_id)
+        mms_models[language] = (model, tokenizer)
+    return VoiceBundle(piper_voice, mms_models)
+
+
+def _speak_piper(voice: PiperVoice, text: str) -> None:
     # Piper yields one chunk per sentence. Playing each chunk with its own
     # sd.play() call reopens the audio stream every time, which can click or
     # clip audio at sentence boundaries - most noticeable on a short trailing
@@ -42,6 +63,24 @@ def speak(voice: PiperVoice, text: str) -> None:
         return
     audio = np.concatenate([chunk.audio_int16_array for chunk in chunks])
     sd.play(audio, samplerate=chunks[0].sample_rate, blocking=True)
+
+
+def _speak_mms(model: VitsModel, tokenizer, text: str) -> None:
+    inputs = tokenizer(text, return_tensors="pt")
+    with torch.no_grad():
+        output = model(**inputs).waveform
+    audio = output.squeeze().numpy()
+    sd.play(audio, samplerate=model.config.sampling_rate, blocking=True)
+
+
+def speak(voices: VoiceBundle, text: str, language: str = DEFAULT_LANGUAGE) -> None:
+    if not text:
+        return
+    if language in voices.mms_models:
+        model, tokenizer = voices.mms_models[language]
+        _speak_mms(model, tokenizer, text)
+    else:
+        _speak_piper(voices.piper_voice, text)
 
 
 def play_ack_chime() -> None:
