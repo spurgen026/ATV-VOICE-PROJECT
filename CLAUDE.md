@@ -1370,6 +1370,83 @@ hardening, round 2"), `nvidia-cublas-cu12`/`nvidia-cudnn-cu12`/
 `nvidia-cuda-runtime-cu12` (redistributable CUDA runtime DLLs enabling
 that GPU path without a full CUDA Toolkit install).
 
+## Two real bugs found via live use, fixed same session (2026-08-08)
+
+User ran a full live conversation covering all three languages and
+reported back two concrete problems, not vague dissatisfaction - both
+diagnosed precisely before fixing, both fixed and tested the same
+session.
+
+- **Compound telemetry questions silently dropped facts.** "Can you tell
+  me about the battery, the tire pressure and the speed I am going on?"
+  answered only the battery. Root cause: the router's grammar can only
+  ever name one target field per call (by design - see
+  `telemetry_router.gbnf`), and `answer_query()` trusted that single pick
+  even when the question clearly asked about several. This is the exact
+  same bug class already fixed once before in this project's now-unused
+  Gemini-era fallback (`data_store.try_local_answer()`, V2 era) - that
+  fix never carried over when V3's router+CAN-cache architecture replaced
+  it entirely. Fixed properly this time: `local_qa._detect_requested_
+  fields()` fuzzy-matches the question against new per-field keyword
+  groups (`config.py`'s `TELEMETRY_FIELD_KEYWORDS`, refactored from the
+  flat `VEHICLE_TERM_KEYWORDS` without changing its content) - 0-1 fields
+  detected defers to the router's single pick as before (preserves cases
+  the keyword scan alone would miss, like "how fast am I going" with no
+  literal "speed" word); 2+ answers every field mentioned. Verified
+  against both exact live-captured questions from this test.
+- **The vehicle-term safety net (built earlier this session) broke a
+  *correct* router decision.** A Tamil battery question
+  ('பாட்டிரியவளவு இருக்கு') got answered with incoherent chat nonsense
+  instead of the battery reading. Diagnosed precisely rather than
+  guessed: the router itself correctly classified it as
+  `get_telemetry`/`battery_percent` - the safety net overrode that
+  *correct* decision to `chat`, because STT had merged 'பாட்டிரிய'
+  (battery) and 'வளவு' (how much) into one token with no space, and
+  comparing that whole merged token against short keywords tanked the
+  character-level similarity score on length alone. The safety net built
+  specifically to prevent dangerous misroutes became the cause of a
+  different one. Fixed: `_fuzzy_contains()` now also slides a
+  keyword-length window across longer tokens to find a keyword embedded
+  inside a merged one, not just matching the whole token. Verified the
+  fix against the failing case AND the original safety-net target case
+  (the weather-question false positive) to confirm the fix didn't
+  quietly reopen the thing it exists to prevent.
+
+## Tamil generation quality investigated, two hypotheses disproven (2026-08-08)
+
+Same live test, user's own words: "the english is excellent and the
+hindi as well but the tamil need work." Confirmed with clean (non-STT,
+directly-typed) Tamil input, not just garbled transcripts - the chat
+model's Tamil *output* is genuinely awkward/semantically confused even
+when given well-formed Tamil questions, separate from any STT accuracy
+issue. Two cheap fixes tested and both disproven cleanly, not assumed:
+
+- **Bigger model (7B) - not a fix.** Re-downloaded Qwen2.5-7B-Instruct to
+  compare Tamil output directly against the 3B model on identical
+  questions. Mixed quality (one response notably more coherent, one not
+  meaningfully better) and **decisively too slow for Tamil specifically
+  - 22-30s per response**, far worse than the already-rejected English
+  case (3.5-12s, see "V3 hardening round 2 continued" chat-model
+  comparison) - ruled out regardless of the inconsistent quality edge.
+  Deleted again after testing (freed 4.68GB) rather than left unused.
+- **More tokens - not a fix.** Hypothesis: `max_tokens=150` was
+  truncating Tamil responses mid-sentence (Tamil script plausibly needs
+  more tokens per unit of meaning than English in this tokenizer).
+  Tested directly at 150/300/500: confirmed 150 *was* truncating
+  (`finish_reason=length`), but 300 and 500 both completed naturally
+  (`finish_reason=stop`) with **the entire response still incoherent
+  throughout, not just the previously-truncated tail** - disproves the
+  truncation theory. Good example of testing instead of assuming: a
+  token-budget bump would have been an easy, plausible-sounding fix that
+  simply doesn't work.
+- **Conclusion: this looks like a genuine Qwen2.5 capability limitation
+  for Tamil specifically**, not a scale or budget problem - plausibly
+  because Tamil (a Dravidian language, less web-dominant than Hindi) is
+  less represented in Qwen's training data. Not yet tried: a genuinely
+  Tamil-specialized local LLM (as opposed to a bigger general Qwen) -
+  bigger, more open-ended research than either hypothesis tested here,
+  not attempted this session.
+
 ## Noise robustness - measured, not fixed (2026-08-08)
 
 The other functional-soundness gap from the same discussion as the echo
