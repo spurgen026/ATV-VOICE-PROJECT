@@ -9,6 +9,7 @@ from .config import (
     LANGUAGE_NAMES,
     RESORT_KNOWLEDGE_TRIGGERS,
     RESORT_KNOWLEDGE_UNAVAILABLE_RESPONSE,
+    TELEMETRY_FIELD_KEYWORDS,
     TELEMETRY_UNAVAILABLE_RESPONSE,
     VEHICLE_TERM_FUZZY_THRESHOLD,
     VEHICLE_TERM_KEYWORDS,
@@ -30,6 +31,28 @@ def _has_vehicle_term_signal(text: str) -> bool:
         for token in tokens
         for keyword in VEHICLE_TERM_KEYWORDS
     )
+
+
+def _detect_requested_fields(text: str) -> List[str]:
+    """Which telemetry fields does this question's text actually mention?
+    Compound questions ("battery, tire pressure, and speed?") need more
+    than the router's single get_telemetry target - live testing 2026-08-08
+    found a 3-field question silently answered with only the first field,
+    the same bug class already fixed once before in this project's now-
+    unused Gemini-era fallback (data_store.try_local_answer()), which
+    never carried over to the current router+CAN-cache architecture.
+    Same fuzzy-matching approach as _has_vehicle_term_signal(), just
+    grouped per field instead of a single yes/no signal."""
+    tokens = text.split()
+    matched = []
+    for field, keywords in TELEMETRY_FIELD_KEYWORDS.items():
+        if any(
+            difflib.SequenceMatcher(None, token, keyword).ratio() >= VEHICLE_TERM_FUZZY_THRESHOLD
+            for token in tokens
+            for keyword in keywords
+        ):
+            matched.append(field)
+    return matched
 
 
 def answer_query(
@@ -70,12 +93,35 @@ def answer_query(
 
     decision = route(router_llm, grammar, question)
     if decision.get("action") == "get_telemetry" and _has_vehicle_term_signal(question):
-        value = cache.get(decision.get("target"))
-        if value is None:
+        requested_fields = _detect_requested_fields(question)
+        if len(requested_fields) <= 1:
+            # 0 or 1 field explicitly mentioned by keyword - trust the
+            # router's own pick, which resolves cases the keyword scan
+            # can't (e.g. "how fast am I going," no literal "speed" word,
+            # already correctly routed to speed_kmh via the router's
+            # semantic understanding, live-tested 2026-08-08).
+            target = decision.get("target")
+            value = cache.get(target)
+            if value is None:
+                return TELEMETRY_UNAVAILABLE_RESPONSE.get(
+                    language, TELEMETRY_UNAVAILABLE_RESPONSE[DEFAULT_LANGUAGE]
+                )
+            return describe(target, value, language)
+
+        # 2+ fields explicitly mentioned - a compound question. Answer
+        # every field the text actually asked about, not just the
+        # router's single target (which only ever names one field by
+        # design, see telemetry_router.gbnf).
+        answers = [
+            describe(field, cache.get(field), language)
+            for field in requested_fields
+            if cache.get(field) is not None
+        ]
+        if not answers:
             return TELEMETRY_UNAVAILABLE_RESPONSE.get(
                 language, TELEMETRY_UNAVAILABLE_RESPONSE[DEFAULT_LANGUAGE]
             )
-        return describe(decision["target"], value, language)
+        return " ".join(answers)
 
     # Deterministic gate, checked before the free-form model ever runs -
     # see RESORT_KNOWLEDGE_TRIGGERS in config.py for why prompting alone

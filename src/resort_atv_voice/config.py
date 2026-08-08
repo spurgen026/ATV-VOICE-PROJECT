@@ -334,15 +334,30 @@ UNEXPECTED_ERROR_RESPONSE = {
 # threshold is the safe failure direction here (a missed real vehicle term
 # just falls back to chat, an honest "didn't understand," rather than a
 # wrong field), so err toward missing over false-triggering.
-VEHICLE_TERM_KEYWORDS = (
-    "battery", "बैटरी", "பேட்டரி", "பாட்டரி", "பாட்டிரி", "बाट्री", "बाटरी",
-    "tire", "tyre", "टायर", "டயர்", "தயர்", "ஐயர்",
-    "pressure", "प्रेशर", "प्रशर", "பிரஷர்", "பிரசர்", "ப்ரச்சர்",
-    "motor", "मोटर", "மோட்டர்", "மோட்டார்",
-    "temperature", "टेम्परेचर", "तापमान", "டெம்பரேச்சர்", "வெப்பநிலை",
-    "speed", "स्पीड", "ஸ்பீட்", "ச்பீட்",
-    "percent", "पर्सेंट", "சதவீதம்",
-)
+# Split by field 2026-08-08 (was one flat tuple) so the same keyword data
+# can also answer "which specific field(s) is this question about" for
+# compound questions ("battery, tire pressure, and speed?") - see
+# local_qa._detect_requested_fields(). VEHICLE_TERM_KEYWORDS below is
+# still the flat union, unchanged in content, just now derived instead of
+# hand-duplicated.
+TELEMETRY_FIELD_KEYWORDS = {
+    "battery_percent": (
+        "battery", "बैटरी", "பேட்டரி", "பாட்டரி", "பாட்டிரி", "बाट्री", "बाटरी",
+        "percent", "पर्सेंट", "சதவீதம்",
+    ),
+    "tire_pressure_psi": (
+        "tire", "tyre", "टायर", "டயர்", "தயர்", "ஐயர்",
+        "pressure", "प्रेशर", "प्रशर", "பிரஷர்", "பிரசர்", "ப்ரச்சர்",
+    ),
+    "motor_temp_c": (
+        "motor", "मोटर", "மோட்டர்", "மோட்டார்",
+        "temperature", "टेम्परेचर", "तापमान", "டெம்பரேச்சர்", "வெப்பநிலை",
+    ),
+    "speed_kmh": (
+        "speed", "स्पीड", "ஸ்பீட்", "ச்பீட்",
+    ),
+}
+VEHICLE_TERM_KEYWORDS = tuple(kw for keywords in TELEMETRY_FIELD_KEYWORDS.values() for kw in keywords)
 VEHICLE_TERM_FUZZY_THRESHOLD = 0.8
 
 # V3 hardening: LOCAL_CHAT_SYSTEM_PROMPT already told the model not to

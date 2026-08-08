@@ -1,7 +1,7 @@
 import pytest
 
 from resort_atv_voice.can_telemetry import TelemetryCache
-from resort_atv_voice.local_qa import _has_vehicle_term_signal, answer_query
+from resort_atv_voice.local_qa import _detect_requested_fields, _has_vehicle_term_signal, answer_query
 
 # Every real transcript captured during this project's live testing that
 # was used to tune the fuzzy vehicle-term safety net (see CLAUDE.md "V3
@@ -40,6 +40,39 @@ def test_vehicle_term_signal_detected(transcript, label):
 @pytest.mark.parametrize("transcript,label", FALSE_CASES, ids=[c[1] for c in FALSE_CASES])
 def test_vehicle_term_signal_not_detected(transcript, label):
     assert _has_vehicle_term_signal(transcript) is False
+
+
+class TestDetectRequestedFields:
+    """Compound-question fact-dropping bug, found live 2026-08-08:
+    'battery, tire pressure, and speed?' answered only the first field.
+    Same bug class already fixed once before in this project's now-unused
+    Gemini-era fallback (data_store.try_local_answer()), which never
+    carried over to the current router+CAN-cache architecture - fixed
+    properly this time via _detect_requested_fields()."""
+
+    def test_single_field_question(self):
+        assert _detect_requested_fields("What's the battery percentage?") == ["battery_percent"]
+
+    def test_no_field_mentioned(self):
+        assert _detect_requested_fields("What's the weather like today?") == []
+
+    def test_the_exact_live_compound_question_that_dropped_two_facts(self):
+        fields = _detect_requested_fields(
+            "Can you tell me about the battery, the tire pressure and the speed I am going on?"
+        )
+        assert set(fields) == {"battery_percent", "tire_pressure_psi", "speed_kmh"}
+
+    def test_the_exact_live_followup_that_dropped_a_fact(self):
+        fields = _detect_requested_fields("What about the tire pressure and the speed?")
+        assert set(fields) == {"tire_pressure_psi", "speed_kmh"}
+
+    def test_field_order_is_stable_regardless_of_mention_order(self):
+        # Order follows TELEMETRY_FIELD_KEYWORDS (battery -> tire -> motor
+        # -> speed), not the order the rider said them in - documented
+        # behavior, not a bug, so a spoken answer always has consistent
+        # ordering across turns.
+        fields = _detect_requested_fields("speed and then battery please")
+        assert fields == ["battery_percent", "speed_kmh"]
 
 
 def test_resort_knowledge_trigger_catches_activity_questions():
@@ -109,3 +142,20 @@ class TestAnswerQueryEndToEnd:
             router_llm, router_grammar, empty_cache, "What's the battery percentage?", chat_llm=chat_llm
         )
         assert "don't have" in response.lower()
+
+    def test_compound_question_answers_every_field_not_just_the_first(
+        self, router_llm, router_grammar, chat_llm, cache
+    ):
+        # The exact live-captured question that used to answer only
+        # "The battery is at 78 percent," silently dropping tire
+        # pressure and speed.
+        response = answer_query(
+            router_llm,
+            router_grammar,
+            cache,
+            "Can you tell me about the battery, the tire pressure and the speed I am going on?",
+            chat_llm=chat_llm,
+        )
+        assert "78" in response
+        assert "32" in response
+        assert "0" in response
