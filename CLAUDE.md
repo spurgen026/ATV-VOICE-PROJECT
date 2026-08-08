@@ -464,6 +464,13 @@ testing can begin. This is a Phase 2 blocker, not optional polish.
    automatically.** The suite exists and passes (215 tests, 1 skip) but
    nothing enforces it stays passing on future changes - currently only
    run by hand.
+10. **New 2026-08-08: wake-word detection under moderate background
+    noise is unreliable, and not in a simple/predictable way.**
+    Synthetic-noise benchmark showed non-monotonic scores (missed at
+    10dB SNR, detected again at a harsher 5dB) - see "Noise robustness -
+    measured, not fixed." STT itself held up well under the same test.
+    Untried: threshold retuning, openWakeWord's own noise-augmented
+    training, or a pre-filter VAD/noise gate.
 
 ### V3 environment setup (2026-08-07)
 
@@ -1362,6 +1369,45 @@ now on GPU (`WHISPER_DEVICE = "cuda"`) rather than CPU - see "V3
 hardening, round 2"), `nvidia-cublas-cu12`/`nvidia-cudnn-cu12`/
 `nvidia-cuda-runtime-cu12` (redistributable CUDA runtime DLLs enabling
 that GPU path without a full CUDA Toolkit install).
+
+## Noise robustness - measured, not fixed (2026-08-08)
+
+The other functional-soundness gap from the same discussion as the echo
+mitigation above: wake-word threshold (0.3) and STT accuracy had only
+ever been tested in a quiet room. `benchmark_noise_robustness.py` (not
+committed) mixes synthetic noise (pink/1/f-shaped, closer to real
+engine/wind rumble than flat white noise) into the app's own
+TTS-synthesized test audio at several SNR levels (20dB mild → 5dB harsh),
+giving real quantified data instead of a guess. Caveat stated in the
+script itself: this measures robustness to noise added to clean
+synthetic speech, not real human speech recorded in a real noisy
+environment - a genuine signal, not a substitute for real outdoor
+testing once real hardware exists.
+
+- **STT held up better than expected**: English and Hindi transcriptions
+  were essentially unchanged across every noise level tested, down to
+  5dB SNR (a harsh environment). A genuine positive finding, not assumed.
+- **Wake word detection is a real, unresolved problem - and it's worse
+  than simple degradation.** Scores were non-monotonic, not a clean
+  falling curve: clean 0.974 → 20dB 0.657 (still detected) → 10dB 0.185
+  (**missed**, below the 0.3 threshold) → 5dB 0.369 (detected again,
+  despite *more* noise than the level that just failed). This isn't
+  "stops working past some noise level," which would at least be
+  predictable - it's erratic behavior right around the threshold, which
+  in practice would feel like the wake word randomly failing for no
+  obvious reason at moderate noise, arguably worse for trust than a
+  clean cutoff. **Not fixed this session** - candidate mitigations not
+  yet tried: retuning `WAKE_WORD_THRESHOLD`, testing openWakeWord's own
+  noise-augmented training options, or a VAD/noise-gate pre-filter before
+  the wake-word model sees the audio.
+- **One result explicitly not counted as a noise finding**: the Tamil
+  tire-pressure case was already garbled at the *clean* baseline (a
+  pre-existing MMS-TTS synthesis-quality issue noted earlier this
+  session, unrelated to noise) - confounded data, not a clean
+  noise-robustness result for Tamil. Would need a cleaner Tamil sample
+  (or real recorded speech) to properly isolate the two effects.
+- Tracked as a new open item: wake-word behavior under moderate noise,
+  unresolved.
 
 ## Echo/feedback mitigation - partial fix (2026-08-08)
 
