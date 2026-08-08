@@ -16,3 +16,11 @@ python-can==4.6.1
 # V3 Phase 5: Tamil/Hindi TTS via MMS-TTS (Piper has no Tamil voices)
 torch==2.13.0
 transformers==5.14.1
+
+# V3 hardening round 2: GPU acceleration for faster-whisper (RTX 3050 was
+# unused - CPU STT latency was ~8-11s/query, GPU brings it to ~0.9s/query).
+# Redistributable CUDA runtime DLLs, not a full CUDA Toolkit install - see
+# stt.py for why plain `pip install` alone isn't enough (PATH setup needed).
+nvidia-cublas-cu12==12.9.2.10
+nvidia-cudnn-cu12==9.24.0.43
+nvidia-cuda-runtime-cu12==12.9.79

@@ -430,11 +430,26 @@ testing can begin. This is a Phase 2 blocker, not optional polish.
    `can_telemetry_service.py` (currently only in a scratch directory,
    not in this repo) use placeholder field names that don't match the
    real dummy schema — conceptual references, not drop-in code.
-4. Tamil/Hindi Piper voice availability — unresearched.
+4. ~~Tamil/Hindi Piper voice availability~~ — **resolved 2026-08-07**:
+   Piper has none; adopted MMS-TTS instead. See "Phase 5 progress."
 5. Whether/when to revive the Gemini RAG path locally for non-telemetry
    resort-knowledge Q&A.
 6. ~~Python 3.9 EOL~~ — **resolved 2026-08-07**, see "V3 environment
    setup" below.
+7. ~~STT latency was ~8-11s per query on this laptop CPU~~ — **resolved
+   2026-08-08**: `cpu_threads`/`beam_size` tuning didn't help (genuine
+   CPU compute ceiling), but the laptop turned out to have an unused
+   NVIDIA RTX 3050 - `WHISPER_DEVICE` switched `"cpu"` → `"cuda"`,
+   latency dropped to ~0.9s/query (faster than real-time) with no
+   accuracy tradeoff. See "V3 hardening, round 2" for the DLL-loading
+   debugging this took (pip-installable CUDA runtime wheels, plus a
+   `PATH`-vs-`os.add_dll_directory()` gotcha in CTranslate2's Windows
+   DLL loading). Still open: whether the *router*'s `llama.cpp`
+   inference should also move to GPU now that CUDA is confirmed
+   working on this machine - not attempted, router latency was already
+   comfortably real-time on CPU (Phase 3, ~0.85s avg) so lower
+   priority; and the Jetson-vs-Pi-5 hardware decision (item 2) still
+   changes what "target hardware" latency actually needs measuring.
 
 ### V3 environment setup (2026-08-07)
 
@@ -817,16 +832,425 @@ just say the sentence." Investigated rather than guessed at a fix:
   session: whether `WHISPER_MODEL_SIZE` needs escalating past `medium`
   to `large-v3-turbo` for the persistent Tamil loanword-mistranscription
   problem (Phase 2+3) - downloaded and a live comparison test was
-  handed to the user, but not yet run/reported back.
+  handed to the user, but not yet run/reported back. **Resolved
+  2026-08-08 - see "V3 hardening, round 2" below.**
+
+## V3 hardening, round 2 (2026-08-08)
+
+Follow-up session working through the gaps this file had tracked as
+open. Three addressed:
+
+- **Fabricated resort amenities (Phase 6 gap) - fixed.** The Phase 6
+  finding was that `LOCAL_CHAT_SYSTEM_PROMPT` already told the model
+  not to invent specific resort amenities, and it did anyway ("a
+  scenic boat ride around the lake") - the same unreliable-uncertainty
+  pattern as the router's Phase 2+3 problem, where prompt wording
+  alone didn't reliably produce honest "I don't know" behavior at this
+  model size. Rather than trying yet another prompt variant, applied
+  the same fix philosophy already used for the router's grammar
+  constraint: don't trust the LLM's self-restraint, gate
+  deterministically instead. `local_qa.answer_query()` now checks the
+  question against `RESORT_KNOWLEDGE_TRIGGERS` (activities, dining,
+  hotel, amenities, sightseeing, etc., in `config.py`) *before*
+  `generate_chat_reply()` ever runs, returning a fixed honest
+  `RESORT_KNOWLEDGE_UNAVAILABLE_RESPONSE` per language instead. Same
+  known limitation as small talk below: English-only keyword list, not
+  exhaustive, so unexpected phrasings of a resort-knowledge question
+  can still slip through to free generation.
+- **Small talk English-only gap (Phase 6 gap) - fixed.** `small_talk.py`
+  now matches Hindi and Tamil greeting/thanks/identity/capability
+  phrases, not just English, with responses spoken back in the
+  detected language. Hand-written phrase and response sets, not
+  verified by a native speaker - same caveat as `number_words.py`.
+  Matching is keyword-only per detected language, so unexpected
+  phrasing can still miss and fall through to the router/chat path,
+  same as English always could.
+- **`WHISPER_MODEL_SIZE` escalation - resolved, escalated to
+  `large-v3-turbo`.** Live head-to-head comparison
+  (`compare_whisper_sizes.py`, not committed - same throwaway-script
+  convention as the Phase 2+3 benchmarks; requires a human speaking,
+  cannot run unattended), 8 real spoken phrases covering all 4
+  telemetry fields across all 3 languages plus 2 chat controls, same
+  recorded audio fed to both model sizes so the comparison isn't
+  confounded by mic/take variance. Result: **large-v3-turbo 7/8 vs.
+  medium 5/8**, and specifically fixed the two most dangerous cases
+  from Phase 2+3 - Hindi and Tamil "battery" no longer misroute to a
+  wrong telemetry field. `WHISPER_MODEL_SIZE` updated to
+  `"large-v3-turbo"` in `config.py`.
+  - **Still not fully solved, and now clearly isolated to the router,
+    not STT**: the Tamil tire-pressure phrase misrouted to `speed_kmh`
+    on *both* Whisper sizes, despite each producing a reasonably
+    legible transcription of the phrase. This confirms the Phase 2+3
+    suspicion that at least one failure in this class is a router-side
+    generalization gap (few-shot examples not covering this exact
+    phrasing), not something more STT accuracy can fix. Not yet
+    attempted: the fuzzy/phonetic-matching mitigation floated in
+    Phase 2+3, or adding this specific transcript to
+    `ROUTER_FEWSHOT_EXAMPLES`.
+  - **CPU latency benchmarked 2026-08-08, and it's a real problem -
+    correcting the "expected to stay well within real-time budget"
+    assumption written earlier the same session, which was wrong.**
+    `benchmark_whisper_latency.py` (not committed, fully automated -
+    synthesizes the same 8 phrases via the app's own TTS voices instead
+    of needing a human to speak, so it can be rerun anytime): on this
+    laptop CPU, **medium averages ~8s and large-v3-turbo ~11s per
+    query, essentially flat regardless of utterance length** - expected
+    per Whisper's architecture (the encoder always processes a fixed
+    30-second padded window, so a 1s query costs the same encoder pass
+    as a 25s one), but not previously measured for this pipeline.
+    Two cheap fixes were tried and both failed to meaningfully help:
+    explicit `cpu_threads=16` (this CPU has 16 logical cores;
+    faster-whisper's default `cpu_threads=0` doesn't use them all) cut
+    turbo's total time only ~10%, medium ~4%; `beam_size=1` (vs. the
+    default 5-way beam) made no measurable difference at all.
+    `ctranslate2.get_supported_compute_types("cpu")` confirms `int8` is
+    genuinely supported on this CPU, ruling out a silent fallback to a
+    slower compute type. This points to a real hardware ceiling on this
+    laptop's CPU, not a misconfiguration.
+  - **Resolved the same session by discovering an unused GPU, not by
+    further CPU tuning.** `nvidia-smi` showed an NVIDIA RTX 3050 (4GB
+    VRAM) on this laptop that `WHISPER_DEVICE` had been hardcoded to
+    `"cpu"` this entire project, on every phase, without ever being
+    checked - the V3 plan's own framing ("`llama.cpp` CPU baseline
+    remains the default") was about the *router*, but STT quietly
+    inherited the same CPU-only assumption without a separate decision
+    ever being made for it. `ctranslate2.get_cuda_device_count()`
+    confirmed CTranslate2 (already installed, no new build needed) sees
+    the GPU. Re-ran `benchmark_whisper_latency.py` with a `cuda` config
+    added alongside the existing `cpu` ones: **large-v3-turbo on GPU
+    averages ~0.9s/query (RTF 0.51, i.e. faster than real-time)**,
+    vs. ~11s/query on CPU - a >12x speedup, and no accuracy-vs-speed
+    tradeoff needed since it's the same model, same weights, just a
+    different device.
+  - **GPU path needed real debugging, not just `device="cuda"`.**
+    First attempt failed: `RuntimeError: Library cublas64_12.dll is not
+    found or cannot be loaded` - this machine has the NVIDIA driver
+    (confirmed via `nvidia-smi`) but not the full CUDA Toolkit (no
+    `cudart`/`cublas` on `PATH`). Installed the pip-installable
+    redistributable DLL wheels instead of the multi-GB Toolkit
+    installer - `nvidia-cublas-cu12`, `nvidia-cudnn-cu12`,
+    `nvidia-cuda-runtime-cu12` - which land in the venv's
+    site-packages (D: drive, consistent with
+    [[feedback_c_drive_low_storage]]). Still failed after that, same
+    error, even though the DLL file genuinely existed on disk -
+    `os.add_dll_directory()` (the standard Python-side fix for "DLL not
+    found" on Windows) did NOT fix it; confirmed via a direct
+    `ctypes.WinDLL()` load test that the DLL loads fine that way, but
+    CTranslate2's own internal loader still couldn't find it. Root
+    cause found by testing rather than guessing: CTranslate2's CUDA
+    backend calls plain Windows `LoadLibrary()` internally, which only
+    searches `PATH` and does not honor `os.add_dll_directory()`-added
+    directories (a distinction most guides don't call out). Fix:
+    prepend the DLL directories to `os.environ["PATH"]` directly,
+    before importing `faster_whisper` - confirmed working after that
+    change. `stt.py` now does this PATH setup at import time, before
+    its `faster_whisper` import; `requirements.txt` gained the three
+    `nvidia-*-cu12` packages under a new comment explaining why plain
+    `pip install` alone wasn't sufficient.
+  - **Same command-line side-note worth keeping**: the venv's
+    `pip.exe` launcher itself silently failed (exit code 1, zero
+    output, even for `pip --version`) partway through this session, for
+    unknown reasons - switching to `python -m pip` worked immediately
+    and was used for the rest of the install. Not investigated further
+    since a working alternative existed; flagging in case `pip.exe`
+    itself needs attention later.
+  - **Re-verified on GPU 2026-08-08 - assumption was wrong, but the
+    consequence was harmless.** Re-ran the same live 8-phrase
+    comparison, this time turbo/cpu(int8) vs turbo/gpu(float16), same
+    recorded audio fed to both. Net accuracy held (6/8 = 6/8), but
+    **transcripts genuinely differed between the two on 2 of 8
+    phrases** - `float16` vs `int8` really does take a different
+    decode path sometimes, not just a rounding non-issue as assumed
+    above. They happened to land on the same aggregate score this run,
+    not because they compute the same thing. One case regressed from
+    the earlier CPU-only run (Hindi tire-pressure, previously a clean
+    transcription, this time garbled to English nonsense on *both*
+    devices identically) - since both devices failed the same way,
+    that's take-to-take speech variance between recording sessions,
+    not a GPU-specific problem. Given the >12x latency win and no net
+    accuracy cost, `WHISPER_DEVICE = "cuda"` stands.
+  - **First full live run of the actual app (`main.py`, not a benchmark
+    script) with the GPU + large-v3-turbo config, real multi-turn
+    conversation, English/Hindi/Tamil mixed.** Mostly good - noticeably
+    fast (consistent with the GPU benchmark), Hindi/Tamil battery and
+    Hindi tire-pressure all answered correctly, English small talk and
+    an honest "I don't have real-time weather" chat reply (not a
+    fabricated one) all worked. **Two live misroutes, both confidently
+    wrong, not just "didn't understand":**
+    - `'ஐயர் பிரசர் எவலவு இருக்கிறு'` (garbled attempt at Tamil
+      tire-pressure) → routed to `motor_temp_c` instead of
+      `tire_pressure_psi`. Same underlying router gap as the Tamil
+      tire-pressure case documented above, just a different wrong
+      field this time (was `speed_kmh` in the scripted benchmark, now
+      `motor_temp_c` on a live, differently-garbled transcript) -
+      confirms this is a live, reproducible danger, not a benchmark
+      artifact.
+    - `'வெளியா வதர் எப்படி இருக்கு?'` (reads like "how's the weather
+      outside," not a telemetry question at all) → routed to
+      `speed_kmh` anyway ("current speed is 0 km/h"). **This broadens
+      the known problem**: it's not only Tamil tire-pressure phrasing
+      that the router mishandles - a Tamil *non-telemetry* chat
+      question can also get confidently misrouted to telemetry. The
+      router's Tamil generalization gap (Phase 2+3) is wider than
+      previously scoped as just "one field, one phrasing."
+    - Two genuine, exact, live-captured failing transcripts now exist
+      for this - more useful than synthetic/scripted test phrases for
+      actually fixing it (e.g. as new `ROUTER_FEWSHOT_EXAMPLES`
+      entries, or test cases for the fuzzy/phonetic-matching
+      mitigation still not attempted).
+  - **Acted on immediately, same session - one fixed, one genuinely
+    puzzling.** Added both live-captured transcripts to
+    `ROUTER_FEWSHOT_EXAMPLES` verbatim (garbling kept as-is, since
+    that's what the router actually has to handle). Verified with
+    `test_router_fix.py` (not committed) against a 12-case set: the two
+    new live failures plus 10 regression checks (existing few-shot
+    examples, the English "weather" query that regressed once before in
+    Phase 2+3, and the earlier known-hard Tamil tire-pressure case).
+    Confirmed a real baseline first (8/12, both new cases failing as
+    expected) before changing anything, then re-ran twice after the fix
+    for consistency given the non-determinism noted below.
+    - **Fixed, no regressions, plus an unplanned bonus**: net score
+      8/12 → 11/12, identical on both post-fix runs. The tire-pressure
+      misroute is fixed. Unexpectedly, the *separate*, previously
+      unresolved Tamil tire-pressure case from Phase 2+3
+      (`டயர் பிரஷர் எவ்வளவு` → `speed_kmh`, open since that session)
+      also now routes correctly - the new example generalized to it,
+      which several earlier few-shot rounds in Phase 2+3 failed to do
+      for similar-looking additions.
+    - **Still fails, genuinely strange**: the weather-question
+      misroute (`வெளியா வதர் எப்படி இருக்கு?` → `speed_kmh`) persists
+      *even as a verbatim few-shot example* - the model sees this exact
+      string paired with the correct `{"action":"chat"}` answer
+      immediately before being asked to classify the identical string,
+      and still gets it wrong, consistently across repeated runs. This
+      isn't a coverage gap more few-shot examples would fix; it looks
+      like a deeper generalization/copying limit at this model size on
+      this particular (garbled, Tamil-script) input. Not solved this
+      session - would need a different mitigation entirely (the
+      fuzzy/phonetic-matching idea floated in Phase 2+3, or accepting
+      this as a hard limit of a 1.5B router and revisiting model size
+      only if it recurs often in practice).
+    - **Non-determinism confirmed, not just suspected**: the baseline
+      run showed `பேட்டரி எவ்வளவு இருக்கு` (Tamil battery) failing,
+      despite working correctly minutes earlier in the live `main.py`
+      test above. `route()` uses `temperature=0.0`, which should be
+      deterministic, but llama.cpp's multi-threaded matrix-multiply
+      reductions can still introduce tiny floating-point differences
+      that occasionally flip a close decision. Means single-run
+      pass/fail on router tests isn't fully reliable - worth re-running
+      close calls before trusting them, same reasoning applied here.
+
+## V3 hardening, round 2 continued: dedicated chat model (2026-08-08)
+
+User asked whether the assistant could be made "more knowledgeable"
+locally (without going back to cloud) after noticing generic-feeling
+answers to open-ended/technical questions - separate from the
+accuracy/latency work above.
+
+- **Root-caused first, not assumed**: one specific complaint example
+  (asking about "boundary" and getting a dictionary-style non-answer)
+  turned out to be an STT mishearing of "battery," not a chat-model
+  quality problem - the model correctly answered the (wrong) word it
+  was given. Flagged this honestly before doing any model work, so the
+  fix that follows is scoped to the real gap (open-ended/technical
+  question quality), not a misdiagnosed one.
+- **Tried the free option first and it didn't work**: tightened
+  `LOCAL_CHAT_SYSTEM_PROMPT` to explicitly ask the existing 1.5B model
+  for "one clear answer, not a list of scenarios" (it had rambled
+  through multiple contingencies on a slope-stability question). Same
+  result as before the change - still rambled. Same unreliable-
+  instruction-following pattern as the router's "don't guess" problem
+  (Phase 2+3) and the chat model's fabricated-amenities problem
+  (V3 hardening round 2 above) - confirms this class of problem needs
+  an actual capability change, not better wording, at this model size.
+- **Tested three CPU model sizes head-to-head on identical technical
+  questions before choosing anything** (regenerative braking, slope
+  stability, an EV fact): 1.5B (already had it - decent but rambled),
+  Qwen2.5-7B-Instruct (`bartowski/Qwen2.5-7B-Instruct-GGUF`, single-file
+  Q4_K_M, 4.68GB - the official `Qwen/...-GGUF` repo splits the 7B file
+  into two parts, avoided that complexity by using a single-file
+  community quant instead) - better tone but 3.5-12s latency, too slow
+  for a voice interface. **Qwen2.5-3B-Instruct
+  (`Qwen/Qwen2.5-3B-Instruct-GGUF`, single-file q4_k_m) won outright** -
+  cleaner and more concise than *both* other sizes on the exact question
+  that had rambled, at 1.5-4.6s latency, close to what 1.5B already
+  cost. Bigger wasn't better here; the 7B result was a reminder not to
+  assume "bigger = smarter" without measuring.
+- **GPU was considered and ruled out by measurement, not guesswork**:
+  this laptop's 4GB RTX 3050 already has ~1.6-1.7GB consumed by
+  OS/desktop overhead before any app loads, and Whisper alone (even
+  after switching to `int8_float16`, see below) uses ~1.1GB more,
+  leaving only ~1.2GB genuinely free - not enough headroom for a
+  meaningfully bigger chat model at reasonable quality alongside
+  Whisper. The 3B chat model runs on CPU instead, which the router
+  already proved comfortable for a 1.5B model (Phase 3) and this
+  session confirmed comfortable enough for 3B too.
+- **`WHISPER_COMPUTE_TYPE` also improved as a side effect of checking
+  GPU headroom**: `float16` → `int8_float16` - measured as a strict
+  win, not a tradeoff (2.85GB vs 3.79GB VRAM, 0.80s vs 1.09s latency on
+  a test clip), verified not to hurt transcription quality on 5
+  synthesized phrases (4/5 identical output, the 1 difference was on an
+  already-garbled synthetic sample in both versions).
+- **Architecture**: `router.py` gained `load_chat_model()`
+  (`CHAT_MODEL_REPO`/`CHAT_MODEL_FILENAME`/`CHAT_MODEL_CONTEXT_SIZE` in
+  `config.py`). `local_qa.answer_query()` now takes `router_llm` and an
+  optional `chat_llm` (defaults to `router_llm` if not given, so
+  single-model callers/scripts still work) - `route()` always uses
+  `router_llm`, `generate_chat_reply()` uses `chat_llm`. `main.py` loads
+  both models at startup and passes both through.
+- **End-to-end verified through the real `answer_query()` path, not
+  just the standalone model test**: telemetry answers still come from
+  `router_llm` + the deterministic CAN cache (unaffected by the chat
+  model change); chat answers now visibly come from the 3B model.
+  **Found and documented a real cold-start cost**: the very first call
+  after loading both models took 4.9s even for a telemetry lookup
+  (which shouldn't need the chat model at all) - confirmed as one-time
+  warmup, not a persistent problem, by running repeated queries
+  immediately after (dropped to ~1s from the second call onward, in
+  line with Phase 3's earlier "first call includes warmup" finding,
+  just larger now since two models are resident in memory instead of
+  one). Not yet tested through a real live `main.py` session with
+  actual speech - the standalone smoke test used direct text input.
+
+## Colloquial Hindi/Tamil phrasing (2026-08-08)
+
+Addressed the open item tracked since Phase 5 hardening: Tamil/Hindi
+telemetry and small-talk responses were formal/written register, not how
+people actually talk. Two different fixes for two different code paths:
+
+- **Fixed templates (`TELEMETRY_FIELD_PHRASES`, `TELEMETRY_UNAVAILABLE_
+  RESPONSE`, `RESORT_KNOWLEDGE_UNAVAILABLE_RESPONSE` in `config.py`;
+  `THANKS_RESPONSE`/`CAPABILITY_RESPONSE`/`IDENTITY_RESPONSE`/
+  `GREETING_RESPONSE` in `small_talk.py`) - rewritten directly, the
+  reliable fix**, since these are fixed text, not model-generated.
+  Highest-confidence single change: Tamil's literary `ஆகும்`/`உள்ளது`
+  verb endings swapped for spoken `இருக்கு` - one of the most
+  well-documented features of Tamil diglossia (formal written Tamil and
+  spoken Tamil are famously distinct registers). Also dropped formal
+  connectors (`தற்போதைய`/`वर्तमान` "current", `क्षमा करें` "forgive me")
+  and swapped formal nouns for the English loanwords already used
+  naturally elsewhere in the app (`प्रतिशत`→`पर्सेंट`, `दबाव`→`प्रेशर`,
+  `அழுத்தம்`/`வெப்பநிலை`→`பிரஷர்`/`டெம்பரேச்சர்` in most spots - matches
+  how the router's own few-shot examples already show riders naturally
+  saying "பிரஷர்"/"ஸ்பீட்"). Kept the respectful `आप`/`உங்கள்` address
+  form throughout (a resort guest, not a close friend) - colloquial
+  vocabulary and structure, deliberately not informal-address (caught
+  and fixed one inconsistent draft that had slipped into `तुम्हारी`/
+  `உன்` before this was applied, which would've read as presumptuous for
+  a guest). Identity response also dropped the formal
+  "voice assistant"/"குரல் உதவியாளர்" self-description in favor of just
+  "I'm your resort ATV" - matches this project's own stated vision
+  (companion, not a tool) better than a technical self-description.
+- **Free-form chat (`LOCAL_CHAT_SYSTEM_PROMPT`) - added a spoken-register
+  instruction, low confidence it will fully work.** Unlike the fixed
+  templates, chat replies are generated, not templated, so there's no
+  deterministic fix available here. This codebase has repeatedly found
+  prompt-only instructions unreliable at this model size (the router's
+  "don't guess" instruction, Phase 2+3; this same prompt's "don't invent
+  amenities" line, V3 hardening round 2 - both needed an actual
+  deterministic gate to work, wording alone wasn't enough). Added the
+  instruction anyway since it's low-cost and there's no better option
+  for this path, but flagged honestly as unlikely to be as reliable as
+  the template rewrite above.
+- **Not verified by a native speaker** - same caveat as `number_words.py`
+  and the original (formal) small-talk phrases. Confirmed only that the
+  code still runs correctly (templates format, `describe()` and
+  `try_small_talk_answer()` both tested with the new text) - whether it
+  actually *sounds* natural needs a real listen-through, ideally by a
+  native speaker, not just a code review.
+
+## STT language detection restricted to en/hi/ta (2026-08-08)
+
+Found via the live test of the colloquial-phrasing change above, not
+something a code review would have caught: `stt.transcribe()` was calling
+`model.transcribe(audio, language=None)`, which lets faster-whisper
+auto-detect from its **full ~99-language set**, not just the 3 languages
+this app actually supports. On short/ambiguous audio this picked
+genuinely irrelevant languages - "Bye" detected as Urdu (`ur`), a
+mumbled/short utterance hallucinated as Spanish (`es`, transcribed as
+`'el parecer y evaluar que'` - not anything the rider said). Since `ur`/
+`es` aren't in `LANGUAGE_NAMES`, `local_qa.answer_query()`'s existing
+`language not in LANGUAGE_NAMES -> DEFAULT_LANGUAGE` fallback caught the
+response-language choice, but the *transcript itself* was still garbage
+text nothing downstream could route correctly.
+
+Fixed by two-step detection: `model.detect_language(audio)` returns
+per-language probabilities for the full set (confirmed via direct testing
+that `en`/`hi`/`ta` are all present in that list, not just the top few);
+picking the best-scoring of just those 3 and forcing
+`model.transcribe(audio, language=<that>)` keeps the auto-detect UX (no
+manual mode switch, the V3 trilingual requirement) while ruling out the
+other ~96 languages Whisper knows. Costs a second encoder pass per query
+(detect + transcribe are now separate calls) - measured latency impact on
+synthesized test audio: 0.78-1.35s per query, barely more than the
+single-pass baseline, still comfortably real-time on GPU. Verified
+correctness on synthesized en/hi/ta audio (all three detected correctly);
+not yet re-verified live with real speech after this specific fix.
+
+## Router safety net for the last known dangerous misroute (2026-08-08)
+
+Closes the remaining piece of item #1 (multilingual routing): the Tamil
+"weather" question (`'வெளியா வதர் எப்படி இருக்கு?'`) that misrouted to
+`speed_kmh` even as a verbatim few-shot example (see "V3 hardening, round
+2" above - two rounds of prompt/few-shot work didn't fix it).
+
+- **New approach, not more few-shot examples**: since the LLM router
+  couldn't be made to reliably admit uncertainty on this specific input
+  even with direct exposure to the correct answer, added a deterministic
+  post-check instead - same "don't trust the LLM's self-restraint, gate
+  deterministically" philosophy already used for
+  `RESORT_KNOWLEDGE_TRIGGERS`. `local_qa._has_vehicle_term_signal()`
+  fuzzy-matches the transcript's tokens against `VEHICLE_TERM_KEYWORDS`
+  (battery/tire/motor/speed/pressure/temperature/percent in en/hi/ta,
+  `config.py`) using `difflib.SequenceMatcher` - if a `get_telemetry`
+  decision has *zero* textual vehicle-term signal anywhere in the
+  transcript, it's downgraded to `chat` regardless of what the router
+  said. Only ever downgrades telemetry → chat, never upgrades the other
+  way and never picks a field itself - a safety net, not a second
+  router.
+- **Threshold (0.8) tuned empirically, not guessed**: character-level
+  fuzzy matching on short Tamil/Hindi tokens is noisy - initial testing
+  found the false-positive risk real (`'வதர்'`, "weather", scored 0.75
+  against `'தயர்'`/tire - uncomfortably close to genuine matches). 0.8
+  cleanly separated the weakest true vehicle-term match seen so far
+  (`'ச்பீட்டில'` at exactly 0.80) from the highest false match (0.75) in
+  testing - a small test set, so the threshold errs toward the safe
+  failure direction (missing a real vehicle term just falls back to
+  chat, an honest "didn't understand," rather than risking a wrong
+  field).
+- **Verified 17/17** against every real transcript captured this session
+  (both live-test misroutes, the 8 benchmark phrases, existing few-shot
+  examples, STT mis-transcriptions like "boundary" for "battery", and
+  farewell phrases) - correct signal detection in every case, including
+  the exact target case.
+- **Verified end-to-end through the real `answer_query()`**, not just the
+  signal-detection function alone: the weather question now gets a real
+  (if low-quality - see below) chat answer instead of "current speed is
+  0 km/h." Tire-pressure and battery cases confirmed unaffected.
+- **Known separate issue surfaced, not fixed**: the chat model's Tamil
+  answer to the weather question was fairly incoherent - not a
+  regression from this fix (the question itself is fundamentally garbled
+  STT output, "வதர்" isn't a real Tamil word), but a reminder that
+  Qwen2.5-3B's Tamil *generation* quality (as opposed to comprehension)
+  hasn't been specifically evaluated. Tracked as a new open item, not
+  investigated further this session.
 
 ### Tech stack additions for V3
 
-`llama-cpp-python`, `python-can`, Qwen2.5-1.5B-Instruct GGUF (q4_k_m -
-3B tested and rejected, see Phase 2+3 investigation above),
-`facebook/mms-tts-tam`/`facebook/mms-tts-hin` via `torch`+`transformers`
+`llama-cpp-python`, `python-can`, Qwen2.5-1.5B-Instruct GGUF for routing
+only (q4_k_m - 3B tested and rejected *as a router*, see Phase 2+3
+investigation above; 3B was separately re-tested and adopted for a
+different job - free-form chat - in "V3 hardening, round 2 continued"),
+Qwen2.5-3B-Instruct GGUF (`Qwen/Qwen2.5-3B-Instruct-GGUF`, q4_k_m) as a
+dedicated chat model, `facebook/mms-tts-tam`/`facebook/mms-tts-hin` via
+`torch`+`transformers`
 for Tamil/Hindi TTS (Piper kept for English; Kokoro-82M/MeloTTS ruled
 out, neither covers Tamil or Hindi), multilingual `faster-whisper`
-(`medium`, replaces `small.en`).
+(`large-v3-turbo`, replaces `small.en` → `medium` → `large-v3-turbo`,
+now on GPU (`WHISPER_DEVICE = "cuda"`) rather than CPU - see "V3
+hardening, round 2"), `nvidia-cublas-cu12`/`nvidia-cudnn-cu12`/
+`nvidia-cuda-runtime-cu12` (redistributable CUDA runtime DLLs enabling
+that GPU path without a full CUDA Toolkit install).
 
 ## Unrelated sibling project — do not confuse
 

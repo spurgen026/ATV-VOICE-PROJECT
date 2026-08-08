@@ -50,10 +50,37 @@ WAKE_WORD_THRESHOLD = 0.3
 # 2026-08-07: it consistently mangled English loanwords embedded in
 # Hindi/Tamil speech ("battery" -> garbled non-words), once causing a
 # confidently wrong telemetry field instead of a safe "didn't understand"
-# - escalated to "medium" per the plan's own fallback.
-WHISPER_MODEL_SIZE = "medium"
-WHISPER_DEVICE = "cpu"
-WHISPER_COMPUTE_TYPE = "int8"
+# - escalated to "medium" per the plan's own fallback. Escalated again to
+# "large-v3-turbo" 2026-08-08 after a live head-to-head comparison
+# (compare_whisper_sizes.py, 8 real spoken phrases, same audio fed to both
+# models): 7/8 vs medium's 5/8, and specifically fixed the two dangerous
+# confidently-wrong-field cases (Hindi and Tamil "battery" misrouting).
+# One case (Tamil tire-pressure -> speed_kmh) still fails on both models
+# despite a legible transcription from either - confirmed router-side, not
+# an STT problem; see CLAUDE.md for the open item this leaves.
+#
+# WHISPER_DEVICE moved "cpu" -> "cuda" 2026-08-08: this laptop has an
+# unused NVIDIA RTX 3050 - discovered while chasing the CPU latency problem
+# above (medium ~8s/query, large-v3-turbo ~11s/query on CPU, essentially
+# flat regardless of utterance length, confirmed via benchmark_whisper_
+# latency.py). GPU inference measured at ~0.9s/query for large-v3-turbo
+# (RTF 0.51, i.e. faster than real-time) - solves the latency problem
+# without giving up the accuracy win, no CPU-vs-accuracy tradeoff needed.
+# Requires nvidia-cublas-cu12/nvidia-cudnn-cu12/nvidia-cuda-runtime-cu12
+# (pip-installable redistributable DLLs, no full CUDA Toolkit installer
+# needed) - see stt.py's PATH setup at import time for why plain `pip
+# install` isn't enough on its own (CTranslate2 loads them via LoadLibrary(),
+# which only honors PATH, not os.add_dll_directory()).
+WHISPER_MODEL_SIZE = "large-v3-turbo"
+WHISPER_DEVICE = "cuda"
+# int8_float16 over plain float16 2026-08-08: measured lower VRAM (2.85GB
+# vs 3.79GB - this 4GB card only has ~1.2GB free after OS/desktop overhead
+# once Whisper is loaded) AND lower latency (0.80s vs 1.09s on a 2s clip) -
+# a genuine free win, not a tradeoff. Transcription quality checked on 5
+# synthesized phrases: 4/5 identical output, the 1 difference was on an
+# already-garbled synthetic Tamil sample in both versions (synthesis
+# artifact, not a real quality regression).
+WHISPER_COMPUTE_TYPE = "int8_float16"
 
 PIPER_VOICE_PATH = MODELS_DIR / "en_GB-cori-high.onnx"
 
@@ -105,6 +132,28 @@ QWEN_MODEL_FILENAME = "qwen2.5-1.5b-instruct-q4_k_m.gguf"
 ROUTER_GRAMMAR_PATH = GRAMMARS_DIR / "telemetry_router.gbnf"
 ROUTER_CONTEXT_SIZE = 2048
 
+# V3 hardening round 2 (2026-08-08): separate, larger model just for
+# free-form chat ("make it more knowledgeable locally without cloud").
+# The router stays on the 1.5B model above - it's a strict classification
+# task the small model already handles well (Phase 3: 18/18 English,
+# CPU latency ~0.85s avg), no reason to pay a bigger model's cost there.
+# Chat is a different task (open-ended generation), where model size
+# genuinely matters more. Tested three CPU options head-to-head on the
+# same technical questions before choosing: 1.5B (already had it, decent
+# but rambled on one multi-scenario question), 7B (better tone, but
+# 3.5-12s latency - too slow for a voice interface), 3B (best of both -
+# cleaner, more concise answers than either 1.5B or 7B, latency 1.5-4.6s,
+# close to what 1.5B already cost). A tighter system prompt asking the 1.5B
+# model directly for "one clear answer, not a list of scenarios" was tried
+# first, for free, before downloading anything - it didn't work, same
+# unreliable-instruction-following pattern already seen for the router's
+# "don't guess" instruction (Phase 2+3) and the chat model's
+# fabricated-amenities problem - confirming this needed an actual model
+# change, not just better wording.
+CHAT_MODEL_REPO = "Qwen/Qwen2.5-3B-Instruct-GGUF"
+CHAT_MODEL_FILENAME = "qwen2.5-3b-instruct-q4_k_m.gguf"
+CHAT_MODEL_CONTEXT_SIZE = 2048
+
 ROUTER_SYSTEM_PROMPT = """You are a routing classifier for a resort ATV's
 voice assistant. Decide whether the rider's message is asking for a
 telemetry reading, or is anything else (small talk, general questions).
@@ -144,6 +193,13 @@ ROUTER_FEWSHOT_EXAMPLES = [
     ("टायर प्रेशर कितना है", {"action": "get_telemetry", "target": "tire_pressure_psi"}),
     ("வணக்கம்", {"action": "chat"}),
     ("धन्यवाद दोस्त", {"action": "chat"}),
+    # Added 2026-08-08 from two real live misroutes captured during an
+    # actual main.py run (see CLAUDE.md "V3 hardening, round 2") - garbled
+    # STT transcripts, not clean scripted text, deliberately kept as-is
+    # (garbling included) since that's what the router actually has to
+    # handle in practice.
+    ("ஐயர் பிரசர் எவலவு இருக்கிறு", {"action": "get_telemetry", "target": "tire_pressure_psi"}),
+    ("வெளியா வதர் எப்படி இருக்கு?", {"action": "chat"}),
 ]
 
 # V3 Phase 6: local chat generation for anything the router classifies as
@@ -162,7 +218,19 @@ You run fully offline on the vehicle itself - no internet, no resort
 documents or booking systems yet. If asked something you genuinely don't
 know, say so honestly instead of guessing - do not invent specific resort
 amenities, activities, or facts you have not been given.
+When speaking Hindi or Tamil, use everyday spoken language, the way
+people actually talk in conversation - not formal written/literary
+Hindi or Tamil.
 Respond in {language_name}, matching the language the rider spoke in."""
+# Added the Hindi/Tamil spoken-register line 2026-08-08, low confidence -
+# this codebase has repeatedly found prompt-only instructions unreliable
+# at this model size (the router's "don't guess" instruction in Phase 2+3,
+# and this same prompt's "don't invent amenities" line both needed a
+# deterministic gate, not just wording, to actually work). The templates
+# in TELEMETRY_FIELD_PHRASES/small_talk.py are the real, reliable fix for
+# colloquial phrasing since they're fixed text, not generated - this line
+# is a low-cost bonus attempt for the free-form chat path specifically,
+# where there's no deterministic alternative.
 
 LANGUAGE_NAMES = {"en": "English", "hi": "Hindi", "ta": "Tamil"}
 DEFAULT_LANGUAGE = "en"
@@ -172,6 +240,23 @@ DEFAULT_LANGUAGE = "en"
 # telemetry cache, never generated by a model, so it can't be hallucinated.
 # Only the phrasing around the number is language-specific template text,
 # written directly rather than machine-translated at runtime.
+#
+# Hindi/Tamil rewritten to colloquial/spoken register 2026-08-08 (were
+# formal/written Tamil and Hindi before - user feedback: "how people
+# actually talk at home", tracked as an open item since Phase 5 hardening).
+# Not verified by a native speaker - same caveat as number_words.py -
+# needs an actual listen-through to confirm, not just a code review.
+# Tamil: swapped the literary ஆகும்/உள்ளது verb endings for spoken இருக்கு -
+# this specific formal-vs-spoken split is one of the most well-documented
+# features of Tamil diglossia, so this is the highest-confidence change
+# here. Also dropped தற்போதைய ("current", a written-register adjective) for
+# இப்போ ("now", spoken), and அழுத்தம்/வெப்பநிலை (formal Tamil nouns) for the
+# loanwords பிரஷர்/டெம்பரேச்சர் where the app's own router few-shot examples
+# already show riders naturally saying "பிரஷர்"/"ஸ்பீட்" instead of the
+# formal Tamil words. Hindi: swapped प्रतिशत/दबाव for the loanwords
+# पर्सेंट/प्रेशर (already how बैटरी/मोटर/टायर are used elsewhere in this
+# app), dropped the formal वर्तमान ("current") and क्षमा करें ("forgive me",
+# quite formal) for a plainer, more spoken tone.
 TELEMETRY_FIELD_PHRASES = {
     "en": {
         "battery_percent": "The battery is at {value} percent.",
@@ -180,22 +265,81 @@ TELEMETRY_FIELD_PHRASES = {
         "tire_pressure_psi": "The tire pressure is {value} psi.",
     },
     "hi": {
-        "battery_percent": "बैटरी {value} प्रतिशत है।",
-        "motor_temp_c": "मोटर का तापमान {value} डिग्री सेल्सियस है।",
-        "speed_kmh": "वर्तमान गति {value} किलोमीटर प्रति घंटा है।",
-        "tire_pressure_psi": "टायर का दबाव {value} पीएसआई है।",
+        "battery_percent": "बैटरी {value} पर्सेंट है।",
+        "motor_temp_c": "मोटर का टेम्परेचर {value} डिग्री सेल्सियस है।",
+        "speed_kmh": "अभी स्पीड {value} किलोमीटर प्रति घंटा है।",
+        "tire_pressure_psi": "टायर प्रेशर {value} पीएसआई है।",
     },
     "ta": {
-        "battery_percent": "பேட்டரி {value} சதவீதம் உள்ளது.",
-        "motor_temp_c": "மோட்டார் வெப்பநிலை {value} டிகிரி செல்சியஸ் ஆகும்.",
-        "speed_kmh": "தற்போதைய வேகம் மணிக்கு {value} கிலோமீட்டர் ஆகும்.",
-        "tire_pressure_psi": "டயர் அழுத்தம் {value} பிஎஸ்ஐ ஆகும்.",
+        "battery_percent": "பேட்டரி {value} சதவீதம் இருக்கு.",
+        "motor_temp_c": "மோட்டர் டெம்பரேச்சர் {value} டிகிரி இருக்கு.",
+        "speed_kmh": "இப்போ ஸ்பீட் மணிக்கு {value} கிலோமீட்டர் இருக்கு.",
+        "tire_pressure_psi": "டயர் பிரஷர் {value} பிஎஸ்ஐ இருக்கு.",
     },
 }
 TELEMETRY_UNAVAILABLE_RESPONSE = {
     "en": "Sorry, I don't have that reading yet.",
-    "hi": "क्षमा करें, मेरे पास अभी वह रीडिंग नहीं है।",
-    "ta": "மன்னிக்கவும், அந்த அளவீடு இன்னும் என்னிடம் இல்லை.",
+    "hi": "सॉरी, अभी वो रीडिंग मेरे पास नहीं है।",
+    "ta": "சாரி, அது இன்னும் என்கிட்ட இல்ல.",
+}
+
+# V3 hardening round 2 continued (2026-08-08): deterministic safety net for
+# the router's remaining known-dangerous failure - a Tamil non-telemetry
+# question ('வெளியா வதர் எப்படி இருக்கு?', reads as "how's the weather
+# outside") still misrouted to speed_kmh even as a verbatim few-shot
+# example (see CLAUDE.md "V3 hardening, round 2"). Same fix philosophy as
+# RESORT_KNOWLEDGE_TRIGGERS: don't trust the LLM's classification alone,
+# gate deterministically. This one only ever downgrades get_telemetry ->
+# chat, never picks a field itself and never upgrades chat -> telemetry -
+# it's a safety net, not a second router.
+#
+# Threshold tuned empirically against real transcripts (difflib.
+# SequenceMatcher.ratio(), character-level): the weakest genuine
+# vehicle-term token seen so far ('ச்பீட்டில', a garbled "speed") scores
+# 0.80 against its keyword; the highest-scoring *non*-vehicle token seen
+# ('வதர்', "weather", against "தயர்"/tire) scores 0.75. 0.8 cleanly
+# separates the two in this test set, but it's a small set - a stricter
+# threshold is the safe failure direction here (a missed real vehicle term
+# just falls back to chat, an honest "didn't understand," rather than a
+# wrong field), so err toward missing over false-triggering.
+VEHICLE_TERM_KEYWORDS = (
+    "battery", "बैटरी", "பேட்டரி", "பாட்டரி", "பாட்டிரி", "बाट्री", "बाटरी",
+    "tire", "tyre", "टायर", "டயர்", "தயர்", "ஐயர்",
+    "pressure", "प्रेशर", "प्रशर", "பிரஷர்", "பிரசர்", "ப்ரச்சர்",
+    "motor", "मोटर", "மோட்டர்", "மோட்டார்",
+    "temperature", "टेम्परेचर", "तापमान", "டெம்பரேச்சர்", "வெப்பநிலை",
+    "speed", "स्पीड", "ஸ்பீட்", "ச்பீட்",
+    "percent", "पर्सेंट", "சதவீதம்",
+)
+VEHICLE_TERM_FUZZY_THRESHOLD = 0.8
+
+# V3 hardening: LOCAL_CHAT_SYSTEM_PROMPT already told the model not to
+# invent resort amenities, and Phase 6 testing showed it did so anyway
+# ("a scenic boat ride around the lake") - the same unreliable-uncertainty
+# pattern documented for the router in Phase 2+3, where prompt wording
+# alone didn't unlock honest "I don't know" behavior at this model size.
+# Same fix as the router's grammar constraint: don't trust the LLM's
+# self-restraint, gate deterministically before generation is ever called.
+# English-only keyword match and not an exhaustive phrase list, so some
+# resort-knowledge questions will still slip through to free generation -
+# same known-limitation shape as small_talk.py's language coverage.
+RESORT_KNOWLEDGE_TRIGGERS = (
+    "activity", "activities", "recommend", "sightsee", "restaurant",
+    "dining", "dinner", "lunch", "breakfast", "menu", "book a table",
+    "reservation", "hotel", "amenity", "amenities", "pool", "spa",
+    "trail", "hike", "hiking", "boat ride", "lake", "waterfall",
+    "things to do", "what should i do", "where can i",
+)
+
+# Rewritten colloquial 2026-08-08, same caveat as TELEMETRY_FIELD_PHRASES
+# above - not native-verified. Kept the respectful आप/உங்கள் address form
+# used elsewhere in this app (a resort guest, not a close friend) -
+# colloquial vocabulary/structure, not informal-address - rather than
+# switching to तुम/உன் which would read as presumptuous for a guest.
+RESORT_KNOWLEDGE_UNAVAILABLE_RESPONSE = {
+    "en": "I don't have real information about resort activities or amenities yet - I can only help with your vehicle for now.",
+    "hi": "रिसॉर्ट की एक्टिविटीज़ या सुविधाओं के बारे में मुझे अभी सही जानकारी नहीं है - फिलहाल मैं बस आपकी गाड़ी के बारे में मदद कर सकता हूं।",
+    "ta": "ரிசார்ட் ஆக்டிவிட்டீஸ் பத்தி இன்னும் சரியா எனக்குத் தெரியல - தற்போதைக்கு உங்க வண்டி பத்தி மட்டும்தான் உதவ முடியும்.",
 }
 
 # V3 Phase 5: Tamil/Hindi TTS. Piper's official voice catalog has zero

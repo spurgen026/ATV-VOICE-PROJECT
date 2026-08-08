@@ -5,6 +5,9 @@ from huggingface_hub import hf_hub_download
 from llama_cpp import Llama, LlamaGrammar
 
 from .config import (
+    CHAT_MODEL_CONTEXT_SIZE,
+    CHAT_MODEL_FILENAME,
+    CHAT_MODEL_REPO,
     DEFAULT_LANGUAGE,
     LANGUAGE_NAMES,
     LOCAL_CHAT_SYSTEM_PROMPT,
@@ -28,6 +31,14 @@ def load_router_model() -> Llama:
     # calls once the file exists, so resolve the path ourselves instead.
     model_path = hf_hub_download(repo_id=QWEN_MODEL_REPO, filename=QWEN_MODEL_FILENAME)
     return Llama(model_path=model_path, n_ctx=ROUTER_CONTEXT_SIZE, verbose=False)
+
+
+def load_chat_model() -> Llama:
+    """Separate, larger model dedicated to generate_chat_reply() - see
+    CHAT_MODEL_REPO in config.py for why this is a different model from
+    the router's, not just a bigger version of the same one."""
+    model_path = hf_hub_download(repo_id=CHAT_MODEL_REPO, filename=CHAT_MODEL_FILENAME)
+    return Llama(model_path=model_path, n_ctx=CHAT_MODEL_CONTEXT_SIZE, verbose=False)
 
 
 def load_grammar() -> LlamaGrammar:

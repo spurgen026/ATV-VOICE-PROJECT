@@ -1,9 +1,33 @@
+import os
+import sys
+
+# V3 hardening round 2 (2026-08-08): CTranslate2's CUDA backend loads
+# cublas/cudnn via plain LoadLibrary(), which only honors PATH, not
+# os.add_dll_directory() - confirmed by testing both directly (ctypes.WinDLL
+# could load the same DLL via add_dll_directory, CTranslate2 still couldn't).
+# No full CUDA Toolkit is installed on this machine, just the pip-installable
+# redistributable DLL wheels (nvidia-cublas-cu12, nvidia-cudnn-cu12,
+# nvidia-cuda-runtime-cu12), which land in the venv's site-packages (D: drive,
+# not C:) rather than a multi-GB installer. Must run before the faster_whisper
+# import below, since that's what pulls in ctranslate2.
+_venv_site_packages = os.path.abspath(
+    os.path.join(os.path.dirname(sys.executable), "..", "Lib", "site-packages")
+)
+_cuda_dll_dirs = [
+    os.path.join(_venv_site_packages, "nvidia", pkg, "bin")
+    for pkg in ("cublas", "cudnn", "cuda_runtime", "cuda_nvrtc")
+]
+_cuda_dll_dirs = [d for d in _cuda_dll_dirs if os.path.isdir(d)]
+if _cuda_dll_dirs:
+    os.environ["PATH"] = os.pathsep.join(_cuda_dll_dirs) + os.pathsep + os.environ["PATH"]
+
 import numpy as np
 import sounddevice as sd
 from faster_whisper import WhisperModel
 
 from .config import (
     DEFAULT_LANGUAGE,
+    LANGUAGE_NAMES,
     QUERY_CHUNK_MS,
     QUERY_MAX_MS,
     QUERY_SILENCE_RMS_THRESHOLD,
@@ -68,8 +92,24 @@ def transcribe(model: WhisperModel, audio: np.ndarray) -> tuple[str, str]:
     the text."""
     if audio.size == 0:
         return "", DEFAULT_LANGUAGE
-    # language=None: auto-detect per utterance (V3 trilingual requirement -
-    # Tamil/English/Hindi with no manual mode switch).
-    segments, info = model.transcribe(audio, language=None)
+
+    # Live testing 2026-08-08 found unconstrained auto-detect (language=
+    # None across Whisper's full ~99-language set) picking irrelevant
+    # languages on short/ambiguous audio - e.g. "Bye" detected as Urdu,
+    # a mumbled utterance hallucinated as Spanish - producing text nothing
+    # downstream can handle. This app only ever supports English/Hindi/
+    # Tamil (V3 trilingual requirement, no manual mode switch), so
+    # constrain detection to just those three: detect_language() returns
+    # per-language probabilities for the full set, pick the best-scoring
+    # of our 3 supported ones, then force transcribe() to that language
+    # rather than letting it re-detect from the full set.
+    _, _, language_probs = model.detect_language(audio)
+    language = max(
+        (entry for entry in language_probs if entry[0] in LANGUAGE_NAMES),
+        key=lambda entry: entry[1],
+        default=(DEFAULT_LANGUAGE, 0.0),
+    )[0]
+
+    segments, info = model.transcribe(audio, language=language)
     text = " ".join(segment.text.strip() for segment in segments).strip()
     return text, info.language

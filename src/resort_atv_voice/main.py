@@ -4,7 +4,7 @@ from . import stt, tts, wake_word
 from .can_telemetry import TelemetryCache, start_fake_ecu, start_listener
 from .config import FOLLOWUP_SPEECH_TIMEOUT_MS, QUERY_SPEECH_TIMEOUT_MS, STARTUP_GREETING
 from .local_qa import answer_query
-from .router import load_grammar, load_router_model
+from .router import load_chat_model, load_grammar, load_router_model
 
 NO_SPEECH_RESPONSE = "Sorry, I didn't catch that."
 
@@ -16,6 +16,7 @@ def run() -> None:
     voices = tts.load_voices()
     router_llm = load_router_model()
     router_grammar = load_grammar()
+    chat_llm = load_chat_model()
 
     # No real ATV CAN bus exists yet - start_fake_ecu() stands in for one.
     # On real hardware this line goes away; start_listener() just points
@@ -60,7 +61,13 @@ def run() -> None:
                 heard_anything = True
 
                 response = answer_query(
-                    router_llm, router_grammar, telemetry_cache, query, history=history, language=language
+                    router_llm,
+                    router_grammar,
+                    telemetry_cache,
+                    query,
+                    chat_llm=chat_llm,
+                    history=history,
+                    language=language,
                 )
                 print(f"Responding: {response!r}")
                 tts.speak(voices, response, language)
