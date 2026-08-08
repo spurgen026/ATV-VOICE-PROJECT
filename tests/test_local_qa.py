@@ -120,6 +120,85 @@ def test_resort_knowledge_trigger_does_not_catch_telemetry_questions():
     assert not any(t in "what is my battery percent".lower() for t in RESORT_KNOWLEDGE_TRIGGERS)
 
 
+class TestChatModelDispatch:
+    """Tamil chat gets a dedicated third model (see TAMIL_CHAT_MODEL_REPO
+    in config.py - Qwen's Tamil generation was genuinely weak even on
+    clean input). Fast test: mocks route() and generate_chat_reply()
+    directly so this verifies the dispatch wiring itself without needing
+    to load any real model - a regression here (e.g. the language == "ta"
+    check silently flipped or dropped) would be easy to miss otherwise."""
+
+    def test_tamil_language_dispatches_to_tamil_chat_llm(self, monkeypatch):
+        import resort_atv_voice.local_qa as local_qa_module
+
+        monkeypatch.setattr(local_qa_module, "route", lambda llm, grammar, q: {"action": "chat"})
+        captured = {}
+        monkeypatch.setattr(
+            local_qa_module,
+            "generate_chat_reply",
+            lambda llm, query, history, language: captured.setdefault("llm", llm) or "reply",
+        )
+
+        chat_llm, tamil_chat_llm = object(), object()
+        answer_query(
+            router_llm=object(),
+            grammar=object(),
+            cache=TelemetryCache(),
+            question="ஏதோ ஒரு கேள்வி",
+            chat_llm=chat_llm,
+            tamil_chat_llm=tamil_chat_llm,
+            language="ta",
+        )
+        assert captured["llm"] is tamil_chat_llm
+
+    def test_english_language_dispatches_to_chat_llm_not_tamil(self, monkeypatch):
+        import resort_atv_voice.local_qa as local_qa_module
+
+        monkeypatch.setattr(local_qa_module, "route", lambda llm, grammar, q: {"action": "chat"})
+        captured = {}
+        monkeypatch.setattr(
+            local_qa_module,
+            "generate_chat_reply",
+            lambda llm, query, history, language: captured.setdefault("llm", llm) or "reply",
+        )
+
+        chat_llm, tamil_chat_llm = object(), object()
+        answer_query(
+            router_llm=object(),
+            grammar=object(),
+            cache=TelemetryCache(),
+            question="some random question",
+            chat_llm=chat_llm,
+            tamil_chat_llm=tamil_chat_llm,
+            language="en",
+        )
+        assert captured["llm"] is chat_llm
+
+    def test_tamil_chat_llm_falls_back_to_chat_llm_when_not_provided(self, monkeypatch):
+        # Same fallback pattern as chat_llm -> router_llm - callers that
+        # only load two models (e.g. quick scripts) shouldn't break.
+        import resort_atv_voice.local_qa as local_qa_module
+
+        monkeypatch.setattr(local_qa_module, "route", lambda llm, grammar, q: {"action": "chat"})
+        captured = {}
+        monkeypatch.setattr(
+            local_qa_module,
+            "generate_chat_reply",
+            lambda llm, query, history, language: captured.setdefault("llm", llm) or "reply",
+        )
+
+        chat_llm = object()
+        answer_query(
+            router_llm=object(),
+            grammar=object(),
+            cache=TelemetryCache(),
+            question="ஏதோ ஒரு கேள்வி",
+            chat_llm=chat_llm,
+            language="ta",
+        )
+        assert captured["llm"] is chat_llm
+
+
 @pytest.mark.slow
 class TestAnswerQueryEndToEnd:
     """Real integration tests through the full answer_query() path - small

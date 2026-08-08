@@ -46,3 +46,10 @@ def chat_llm():
     from resort_atv_voice.router import load_chat_model
 
     return load_chat_model()
+
+
+@pytest.fixture(scope="session")
+def tamil_chat_llm():
+    from resort_atv_voice.router import load_tamil_chat_model
+
+    return load_tamil_chat_model()

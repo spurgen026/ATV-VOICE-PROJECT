@@ -174,6 +174,27 @@ CHAT_MODEL_REPO = "Qwen/Qwen2.5-3B-Instruct-GGUF"
 CHAT_MODEL_FILENAME = "qwen2.5-3b-instruct-q4_k_m.gguf"
 CHAT_MODEL_CONTEXT_SIZE = 2048
 
+# Third chat model, Tamil-only (2026-08-08). Live testing found Qwen2.5's
+# Tamil generation genuinely weak - even with clean, well-formed Tamil
+# input (not an STT artifact), output was semantically confused. Two
+# cheap fixes tested and disproven directly: a bigger Qwen (7B) wasn't
+# reliably better and was far slower for Tamil specifically (22-30s,
+# worse than the English case that already ruled out 7B); a higher
+# max_tokens budget didn't help either (finish_reason=stop at 300/500
+# tokens, response still incoherent throughout, not just a truncated
+# tail - proved it wasn't a token-budget artifact before looking further).
+# abhinand/tamil-llama-7b-instruct-v0.2 (Llama 2 + an extended 16,000-
+# token Tamil vocabulary, ChatML format) tested head-to-head on the same
+# questions: markedly more coherent Tamil AND faster (5.25-8.59s) than
+# generic Qwen-7B's Tamil output - the extended vocabulary means fewer
+# tokens for the same content, fixing both problems at once. Still
+# slower than Qwen-3B's English/Hindi latency (1.5-4.6s), but only
+# affects free-form Tamil chat - telemetry and small talk are
+# deterministic and unaffected either way.
+TAMIL_CHAT_MODEL_REPO = "abhinand/tamil-llama-7b-instruct-v0.2-GGUF"
+TAMIL_CHAT_MODEL_FILENAME = "tamil-llama-7b-instruct-v0.2.Q4_K_M.gguf"
+TAMIL_CHAT_MODEL_CONTEXT_SIZE = 2048
+
 ROUTER_SYSTEM_PROMPT = """You are a routing classifier for a resort ATV's
 voice assistant. Decide whether the rider's message is asking for a
 telemetry reading, or is anything else (small talk, general questions).
@@ -254,6 +275,25 @@ Respond in {language_name}, matching the language the rider spoke in."""
 
 LANGUAGE_NAMES = {"en": "English", "hi": "Hindi", "ta": "Tamil"}
 DEFAULT_LANGUAGE = "en"
+
+# Deterministic retry for Tamil chat replies (2026-08-08): the "Respond
+# in {language_name}" instruction above is exactly the kind of prompt-only
+# instruction this codebase has repeatedly found unreliable - confirmed
+# directly for Tamil, not assumed: asked the same Tamil question 3 times
+# through generate_chat_reply(), got English back twice and Tamil once.
+# Answering in English when a rider spoke Tamil is arguably worse than a
+# mediocre Tamil answer, since they may not read English at all. Same
+# "don't trust the LLM's self-restraint, gate deterministically" fix
+# philosophy as everywhere else - generate_chat_reply() checks the actual
+# Unicode script of the output and retries (temperature=0.7 makes each
+# attempt genuinely different, not a repeat of the same failure) rather
+# than trusting the instruction on the first try. Only applied for Tamil -
+# no evidence of the same problem for Hindi in live testing, so scoped to
+# where the actual failure was confirmed rather than applied everywhere
+# "just in case."
+TAMIL_UNICODE_RANGE = (0x0B80, 0x0BFF)
+TAMIL_SCRIPT_MIN_RATIO = 0.5
+CHAT_LANGUAGE_RETRY_ATTEMPTS = 3
 
 # Phrases for the get_telemetry branch, per language - the router only ever
 # picks which field to fetch, the actual number always comes from the CAN

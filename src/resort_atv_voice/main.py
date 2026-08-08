@@ -10,7 +10,7 @@ from .config import (
     UNEXPECTED_ERROR_RESPONSE,
 )
 from .local_qa import answer_query
-from .router import load_chat_model, load_grammar, load_router_model
+from .router import load_chat_model, load_grammar, load_router_model, load_tamil_chat_model
 
 NO_SPEECH_RESPONSE = "Sorry, I didn't catch that."
 
@@ -23,6 +23,7 @@ def run() -> None:
     router_llm = load_router_model()
     router_grammar = load_grammar()
     chat_llm = load_chat_model()
+    tamil_chat_llm = load_tamil_chat_model()
 
     # No real ATV CAN bus exists yet - start_fake_ecu() stands in for one.
     # On real hardware this line goes away; start_listener() just points
@@ -84,6 +85,7 @@ def run() -> None:
                         telemetry_cache,
                         query,
                         chat_llm=chat_llm,
+                        tamil_chat_llm=tamil_chat_llm,
                         history=history,
                         language=language,
                     )

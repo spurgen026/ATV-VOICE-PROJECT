@@ -87,6 +87,7 @@ def answer_query(
     cache: TelemetryCache,
     question: str,
     chat_llm: Optional[Llama] = None,
+    tamil_chat_llm: Optional[Llama] = None,
     history: Optional[History] = None,
     language: str = DEFAULT_LANGUAGE,
 ) -> str:
@@ -102,6 +103,12 @@ def answer_query(
     more concise answers. chat_llm defaults to router_llm so this still
     works if a caller only has one model loaded (e.g. quick scripts/tests).
 
+    tamil_chat_llm is a third, optional model used only for Tamil chat
+    (live testing found Qwen's Tamil generation genuinely weak even on
+    clean input - see TAMIL_CHAT_MODEL_REPO in config.py). Falls back to
+    chat_llm when not provided, same pattern as chat_llm falling back to
+    router_llm.
+
     small_talk.py now matches Hindi/Tamil phrases too, not just English -
     keyword-only per detected language, hand-written and not verified by a
     native speaker, so unexpected phrasing can still miss and fall through
@@ -112,6 +119,8 @@ def answer_query(
         language = DEFAULT_LANGUAGE
     if chat_llm is None:
         chat_llm = router_llm
+    if tamil_chat_llm is None:
+        tamil_chat_llm = chat_llm
 
     small_talk = try_small_talk_answer(question, language)
     if small_talk:
@@ -158,4 +167,5 @@ def answer_query(
             language, RESORT_KNOWLEDGE_UNAVAILABLE_RESPONSE[DEFAULT_LANGUAGE]
         )
 
-    return generate_chat_reply(chat_llm, question, history, language)
+    active_chat_llm = tamil_chat_llm if language == "ta" else chat_llm
+    return generate_chat_reply(active_chat_llm, question, history, language)

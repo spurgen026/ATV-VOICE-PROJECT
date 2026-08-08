@@ -5,6 +5,7 @@ from huggingface_hub import hf_hub_download
 from llama_cpp import Llama, LlamaGrammar
 
 from .config import (
+    CHAT_LANGUAGE_RETRY_ATTEMPTS,
     CHAT_MODEL_CONTEXT_SIZE,
     CHAT_MODEL_FILENAME,
     CHAT_MODEL_REPO,
@@ -18,6 +19,11 @@ from .config import (
     ROUTER_FEWSHOT_EXAMPLES,
     ROUTER_GRAMMAR_PATH,
     ROUTER_SYSTEM_PROMPT,
+    TAMIL_CHAT_MODEL_CONTEXT_SIZE,
+    TAMIL_CHAT_MODEL_FILENAME,
+    TAMIL_CHAT_MODEL_REPO,
+    TAMIL_SCRIPT_MIN_RATIO,
+    TAMIL_UNICODE_RANGE,
 )
 
 History = List[Tuple[str, str]]
@@ -39,6 +45,14 @@ def load_chat_model() -> Llama:
     the router's, not just a bigger version of the same one."""
     model_path = hf_hub_download(repo_id=CHAT_MODEL_REPO, filename=CHAT_MODEL_FILENAME)
     return Llama(model_path=model_path, n_ctx=CHAT_MODEL_CONTEXT_SIZE, verbose=False)
+
+
+def load_tamil_chat_model() -> Llama:
+    """Third chat model, used only for Tamil - see TAMIL_CHAT_MODEL_REPO
+    in config.py for why Qwen's Tamil generation needed a genuinely
+    Tamil-specialized model rather than a bigger general one."""
+    model_path = hf_hub_download(repo_id=TAMIL_CHAT_MODEL_REPO, filename=TAMIL_CHAT_MODEL_FILENAME)
+    return Llama(model_path=model_path, n_ctx=TAMIL_CHAT_MODEL_CONTEXT_SIZE, verbose=False)
 
 
 def load_grammar() -> LlamaGrammar:
@@ -66,13 +80,32 @@ def route(llm: Llama, grammar: LlamaGrammar, query: str) -> dict:
     return json.loads(raw)
 
 
+def _script_ratio(text: str, unicode_range: Tuple[int, int]) -> float:
+    """Fraction of `text`'s alphabetic characters that fall within
+    `unicode_range`. Used to verify a reply actually came back in the
+    requested script, instead of trusting the "Respond in {language_name}"
+    prompt instruction - see generate_chat_reply()'s retry loop."""
+    letters = [c for c in text if c.isalpha()]
+    if not letters:
+        return 0.0
+    in_range = sum(1 for c in letters if unicode_range[0] <= ord(c) <= unicode_range[1])
+    return in_range / len(letters)
+
+
 def generate_chat_reply(
     llm: Llama, query: str, history: Optional[History] = None, language: str = DEFAULT_LANGUAGE
 ) -> str:
     """Free-form (no grammar) local reply for anything the router classifies
     as chat and small_talk.py doesn't already handle - the same Qwen model
     the router uses, so this needs no cloud call. Not grounded in any
-    document corpus (that's V2's parked Gemini/RAG path, not this)."""
+    document corpus (that's V2's parked Gemini/RAG path, not this).
+
+    For Tamil, retries if the reply doesn't actually come back in Tamil
+    script - confirmed live 2026-08-08 that the "Respond in {language_name}"
+    instruction alone is unreliable (2 of 3 identical attempts answered in
+    English), the same unreliable-instruction-following pattern already
+    seen elsewhere in this codebase. See CHAT_LANGUAGE_RETRY_ATTEMPTS in
+    config.py."""
     language_name = LANGUAGE_NAMES.get(language, LANGUAGE_NAMES[DEFAULT_LANGUAGE])
     system_prompt = LOCAL_CHAT_SYSTEM_PROMPT.format(language_name=language_name)
     messages = [{"role": "system", "content": system_prompt}]
@@ -81,5 +114,12 @@ def generate_chat_reply(
         messages.append({"role": "assistant", "content": a})
     messages.append({"role": "user", "content": query})
 
-    result = llm.create_chat_completion(messages=messages, max_tokens=150, temperature=0.7)
-    return result["choices"][0]["message"]["content"].strip()
+    attempts = CHAT_LANGUAGE_RETRY_ATTEMPTS if language == "ta" else 1
+    text = ""
+    for attempt in range(attempts):
+        result = llm.create_chat_completion(messages=messages, max_tokens=150, temperature=0.7)
+        text = result["choices"][0]["message"]["content"].strip()
+        if language != "ta" or _script_ratio(text, TAMIL_UNICODE_RANGE) >= TAMIL_SCRIPT_MIN_RATIO:
+            return text
+        print(f"generate_chat_reply: attempt {attempt + 1} didn't come back in Tamil script, retrying")
+    return text

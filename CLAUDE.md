@@ -1442,10 +1442,77 @@ issue. Two cheap fixes tested and both disproven cleanly, not assumed:
 - **Conclusion: this looks like a genuine Qwen2.5 capability limitation
   for Tamil specifically**, not a scale or budget problem - plausibly
   because Tamil (a Dravidian language, less web-dominant than Hindi) is
-  less represented in Qwen's training data. Not yet tried: a genuinely
-  Tamil-specialized local LLM (as opposed to a bigger general Qwen) -
-  bigger, more open-ended research than either hypothesis tested here,
-  not attempted this session.
+  less represented in Qwen's training data.
+
+## Third chat model added: Tamil-Llama-7B for Tamil only (2026-08-08)
+
+User asked directly whether running separate models per language would
+increase response time, and whether there was any other solution beyond
+the two disproven hypotheses above. Answered the architecture question
+first (no inherent latency cost - each query only ever runs the one
+model it needs, same pattern already established for router_llm vs.
+chat_llm), then researched a genuinely Tamil-specialized model rather
+than a bigger general one.
+
+- **`abhinand/tamil-llama-7b-instruct-v0.2-GGUF`** (Llama 2 + an
+  extended 16,000-token Tamil vocabulary, ChatML format) tested
+  head-to-head on the same two questions as the disproven Qwen-7B
+  hypothesis: markedly more coherent Tamil output AND faster
+  (5.25-8.59s vs. Qwen-7B's 22-30s for Tamil) - the extended vocabulary
+  means fewer tokens needed for the same content, fixing both problems
+  at once. Confirmed the file size (4.18GB) and correct prompt format
+  (ChatML, verified via the model card rather than assumed) before
+  testing.
+- **Wired in as a genuine third model**: `router.py` gained
+  `load_tamil_chat_model()` (`TAMIL_CHAT_MODEL_REPO`/`_FILENAME`/
+  `_CONTEXT_SIZE` in `config.py`). `local_qa.answer_query()` gained an
+  optional `tamil_chat_llm` parameter, dispatched only when
+  `language == "ta"` for the free-form chat path (falls back to
+  `chat_llm` when not provided, same pattern as `chat_llm` falling back
+  to `router_llm`). `main.py` loads all three models at startup. Small
+  talk and telemetry are completely unaffected either way - both stay
+  deterministic, no generation involved.
+- **Found and fixed a second, more dangerous problem during
+  verification, not assumed away**: the first real end-to-end test
+  (not the earlier standalone comparison) came back in *English*
+  despite being asked in Tamil. Investigated rather than dismissed as a
+  fluke - reran the identical question 3 times through the real
+  `generate_chat_reply()` path: English twice, Tamil once. The
+  "Respond in {language_name}" prompt instruction is exactly the kind
+  of prompt-only instruction this codebase has repeatedly found
+  unreliable (router's "don't guess," Phase 2+3; this same prompt's
+  "don't invent amenities" line) - confirmed directly for Tamil output
+  language too, not assumed. Answering in English when a rider spoke
+  Tamil is arguably worse than mediocre Tamil, since they may not read
+  English at all.
+- **Fixed deterministically, same philosophy as everywhere else in this
+  codebase**: `generate_chat_reply()` now checks the actual Unicode
+  script of the reply (`_script_ratio()` against `TAMIL_UNICODE_RANGE`,
+  `config.py`) and retries (temperature=0.7 makes each attempt
+  genuinely different, not a repeated failure) up to
+  `CHAT_LANGUAGE_RETRY_ATTEMPTS` (3) if it didn't come back in Tamil,
+  only for `language == "ta"` - no evidence of the same problem for
+  Hindi in live testing, so scoped to where the failure was actually
+  confirmed. Verified fixed: reran the same question 5 times after the
+  fix, all 5 came back in Tamil (some needed 1-2 internal retries).
+  Verified through the real end-to-end pipeline, not just the
+  standalone router-model test.
+- **Tested**: `tests/test_router.py` covers `_script_ratio()` directly
+  and `generate_chat_reply()`'s retry behavior via a scripted fake
+  model (controls exactly which attempt returns Tamil, since real
+  generation isn't deterministic) - retries until Tamil, returns
+  immediately when the first attempt is already Tamil, gives up after
+  the bounded attempt count rather than looping forever, and doesn't
+  retry at all for English. `tests/test_local_qa.py` covers the
+  chat-model dispatch itself (Tamil routes to `tamil_chat_llm`, English
+  to `chat_llm`, falls back correctly when only two models are loaded).
+  240 tests passing, 1 documented skip.
+- **Honest tradeoff, not hidden**: Tamil chat latency (5-8.6s, plus up
+  to 3x on a retry-heavy query) is meaningfully slower than English/
+  Hindi's 1.5-4.6s. Only affects free-form Tamil chat, not telemetry
+  lookups - considered worth it for the quality and correctness gain
+  given the alternative was either weak Tamil or, worse, silently
+  answering in the wrong language entirely.
 
 ## Noise robustness - measured, not fixed (2026-08-08)
 
