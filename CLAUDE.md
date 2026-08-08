@@ -1514,6 +1514,78 @@ than a bigger general one.
   given the alternative was either weak Tamil or, worse, silently
   answering in the wrong language entirely.
 
+## Second live test: real misroutes fixed, one harder problem surfaced (2026-08-08)
+
+User ran a fresh live conversation immediately after the Tamil model
+change above and reported real, severe regressions - correctly, not an
+overreaction. Diagnosed precisely before responding, not just
+apologized to:
+
+- **Two field misroutes** (a battery question answered with the speed
+  reading, a tire-pressure question answered with the battery reading).
+  Root cause confirmed by calling `route()` directly on the exact
+  transcripts: the router itself picked the wrong field for both, a
+  known, still-open Tamil router-accuracy gap (item #1). But
+  `_detect_requested_fields()` correctly identified the right field
+  from literal keywords in *both* cases - the router's wrong pick was
+  simply trusted over an available, correct keyword signal.
+- **A fabricated speed reading (invented "80-90 kmph")** - the more
+  serious one, since it's exactly the "confidently wrong telemetry
+  data" failure mode the entire grammar-constrained-router architecture
+  was built to prevent. Root cause was different from the misroutes,
+  and self-inflicted: the router actually classified this question
+  correctly as `get_telemetry`/`speed_kmh` (confirmed directly), but
+  `_has_vehicle_term_signal()` - the safety net built earlier this
+  session - blocked that *correct* decision and dumped the question
+  into unguarded chat, because the question used **வேகத்தில்**, genuine
+  native Tamil vocabulary for "speed," and the keyword list only ever
+  had the English loanword ("ஸ்பீட்") and its garbled variants. The
+  safety net's blind spot - loanwords only, no native vocabulary - is
+  what let the fabrication happen, not a new chat-model problem.
+- **Fixed both root causes**, not just the symptoms:
+  1. `TELEMETRY_FIELD_KEYWORDS` gained **வேகம்/வேகத்தில்** (speed) and
+     **அழுத்தம்** (pressure) - genuine native Tamil vocabulary, not just
+     loanwords. Battery/tire have no distinct common native word to add
+     (பேட்டரி/டயர் *are* the standard spoken terms). Motor/temperature
+     already had வெப்பநிலை.
+  2. `local_qa.answer_query()` restructured: literal keyword matches
+     (`_detect_requested_fields()`) are now checked **before** the
+     router and answered directly from the CAN cache, bypassing the
+     router's own field pick entirely when a keyword is unambiguous -
+     the router is now only consulted for the 0-literal-keyword case
+     (paraphrased questions like "how fast am I going," still protected
+     by the existing `_has_vehicle_term_signal()` downgrade safety net).
+     This also skips a model call entirely for the common, clear-cut
+     case - a speed bonus, not just a safety one.
+  - Verified against all three exact live-captured failing transcripts
+    through the real `answer_query()` pipeline: all three now answer
+    correctly from the cache. Permanent regression tests added
+    (`test_local_qa.py::TestAnswerQueryEndToEnd::
+    test_keyword_match_overrides_a_flaky_router_pick`). Full suite:
+    243 passing, 1 documented skip.
+- **One case NOT fixed, honestly flagged rather than papered over**:
+  a heavily garbled, ambiguous transcript ('காத்து யோலோ இருக்கு' - no
+  clear meaning, no keyword match, `_has_vehicle_term_signal()` and
+  `_detect_requested_fields()` both correctly return nothing) still
+  reached the unguarded chat path and produced something genuinely
+  bad - a fabricated, wrong battery percentage (75% vs. the real 78%)
+  *and* an entirely unrelated tangent about a 2011 Indian film. This is
+  a different, harder problem than the two fixed above: it's not a
+  keyword-detection gap, it's the chat model choosing to fabricate
+  specific-sounding claims when genuinely uncertain, on input that's
+  arguably too garbled for even a human to confidently interpret. Same
+  underlying alignment limitation already documented multiple times
+  this session (Phase 2+3's router uncertainty, the fabricated-
+  amenities problem) - prompting alone hasn't reliably fixed this class
+  of problem anywhere else in this codebase either. Not attempted this
+  session: a post-hoc filter on chat output for telemetry-sounding
+  numeric claims would be the natural next mitigation, but is
+  meaningfully harder to build reliably across all three languages
+  (Hindi/Tamil telemetry answers spell numbers out as words via
+  `number_words.py`, not digits, so a simple digit-pattern filter
+  would miss most real cases) - not started without confirming it's
+  worth the complexity.
+
 ## Noise robustness - measured, not fixed (2026-08-08)
 
 The other functional-soundness gap from the same discussion as the echo

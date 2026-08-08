@@ -380,6 +380,19 @@ UNEXPECTED_ERROR_RESPONSE = {
 # local_qa._detect_requested_fields(). VEHICLE_TERM_KEYWORDS below is
 # still the flat union, unchanged in content, just now derived instead of
 # hand-duplicated.
+# 2026-08-08: live testing found the keyword lists only covered English
+# loanwords (பேட்டரி, டயர், பிரஷர், ஸ்பீட்), not genuine native Tamil
+# vocabulary a rider might use instead - a real Tamil speed question
+# ('எவ்வளோ வேகத்தில நம்மும் போயிட்டிருக்கும்' - "at what speed are we
+# going," using வேகம்/வேகத்தில், not the loanword) had zero keyword
+# signal, which meant the vehicle-term safety net blocked an otherwise
+# *correct* router decision and let it fall through to the unguarded chat
+# model, which then invented a fake speed reading. Added வேகம்/வேகத்தில்
+# (speed) and அழுத்தம் (pressure, already had the loanword பிரஷர் but not
+# the native word) - motor_temp_c already had வெப்பநிலை (temperature),
+# battery/tire have no distinct common native-Tamil word to add (பேட்டரி/
+# டயர் are themselves the standard spoken terms, not just loanword
+# alternatives to some other native word).
 TELEMETRY_FIELD_KEYWORDS = {
     "battery_percent": (
         "battery", "बैटरी", "பேட்டரி", "பாட்டரி", "பாட்டிரி", "बाट्री", "बाटरी",
@@ -388,13 +401,14 @@ TELEMETRY_FIELD_KEYWORDS = {
     "tire_pressure_psi": (
         "tire", "tyre", "टायर", "டயர்", "தயர்", "ஐயர்",
         "pressure", "प्रेशर", "प्रशर", "பிரஷர்", "பிரசர்", "ப்ரச்சர்",
+        "அழுத்தம்",
     ),
     "motor_temp_c": (
         "motor", "मोटर", "மோட்டர்", "மோட்டார்",
         "temperature", "टेम्परेचर", "तापमान", "டெம்பரேச்சர்", "வெப்பநிலை",
     ),
     "speed_kmh": (
-        "speed", "स्पीड", "ஸ்பீட்", "ச்பீட்",
+        "speed", "स्पीड", "ஸ்பீட்", "ச்பீட்", "வேகம்", "வேகத்தில்",
     ),
 }
 VEHICLE_TERM_KEYWORDS = tuple(kw for keywords in TELEMETRY_FIELD_KEYWORDS.values() for kw in keywords)

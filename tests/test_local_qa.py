@@ -271,3 +271,34 @@ class TestAnswerQueryEndToEnd:
         assert "78" in response
         assert "32" in response
         assert "0" in response
+
+    @pytest.mark.parametrize(
+        "question,expected_substring",
+        [
+            ("காட்டிரியை உலோ இருக்கு", "எழுபத்தி எட்டு"),  # battery 78 - router misrouted this to speed/motor live
+            ("டாயர் பிரச்சர் எவ்வளோ இருக்கு", "முப்பத்தி இரண்டு"),  # tire 32 - router misrouted this to battery live
+            ("எவ்வளோ வேகத்தில நம்மும் போயிட்டிருக்கும்.", "பூஜ்யம்"),  # speed 0 - was hallucinated as 80-90 by chat
+        ],
+        ids=["ta battery misroute (was speed/motor)", "ta tire misroute (was battery)", "ta speed (was hallucinated)"],
+    )
+    def test_keyword_match_overrides_a_flaky_router_pick(
+        self, router_llm, router_grammar, chat_llm, tamil_chat_llm, cache, question, expected_substring
+    ):
+        # Live-captured 2026-08-08: the router itself picked the wrong
+        # field for the first two, and the vehicle-term safety net
+        # blocked a *correct* router decision for the third (native
+        # Tamil "வேகத்தில" wasn't in the keyword list, only the loanword
+        # "ஸ்பீட்" was) - letting it fall through to chat, which invented
+        # a fake speed reading. All three are now answered directly from
+        # a literal keyword match, bypassing the router's field pick
+        # entirely rather than trusting it.
+        response = answer_query(
+            router_llm,
+            router_grammar,
+            cache,
+            question,
+            chat_llm=chat_llm,
+            tamil_chat_llm=tamil_chat_llm,
+            language="ta",
+        )
+        assert expected_substring in response

@@ -126,16 +126,20 @@ def answer_query(
     if small_talk:
         return small_talk
 
-    decision = route(router_llm, grammar, question)
-    if decision.get("action") == "get_telemetry" and _has_vehicle_term_signal(question):
-        requested_fields = _detect_requested_fields(question)
-        if len(requested_fields) <= 1:
-            # 0 or 1 field explicitly mentioned by keyword - trust the
-            # router's own pick, which resolves cases the keyword scan
-            # can't (e.g. "how fast am I going," no literal "speed" word,
-            # already correctly routed to speed_kmh via the router's
-            # semantic understanding, live-tested 2026-08-08).
-            target = decision.get("target")
+    # Literal keyword matches are checked BEFORE the router, and answered
+    # directly from the CAN cache without ever asking the router to pick
+    # a field - found live 2026-08-08 that trusting the router's own
+    # target even when a keyword clearly named the field let two real
+    # misroutes through (a battery question routed to speed/motor_temp, a
+    # tire question routed to battery) despite the correct field being
+    # unambiguous from the text itself. The router is still needed below
+    # for cases with no literal keyword at all (e.g. "how fast am I
+    # going," no literal "speed" word) - this only short-circuits the
+    # clear-cut cases, which also skips a model call for them.
+    requested_fields = _detect_requested_fields(question)
+    if requested_fields:
+        if len(requested_fields) == 1:
+            target = requested_fields[0]
             value = cache.get(target)
             if value is None:
                 return TELEMETRY_UNAVAILABLE_RESPONSE.get(
@@ -144,9 +148,12 @@ def answer_query(
             return describe(target, value, language)
 
         # 2+ fields explicitly mentioned - a compound question. Answer
-        # every field the text actually asked about, not just the
-        # router's single target (which only ever names one field by
-        # design, see telemetry_router.gbnf).
+        # every field the text actually asked about, not just one -
+        # live testing 2026-08-08 found a 3-field question silently
+        # answered with only the first, the same bug class already fixed
+        # once before in this project's now-unused Gemini-era fallback
+        # (data_store.try_local_answer()), which never carried over to
+        # the current router+CAN-cache architecture.
         answers = [
             describe(field, cache.get(field), language)
             for field in requested_fields
@@ -157,6 +164,21 @@ def answer_query(
                 language, TELEMETRY_UNAVAILABLE_RESPONSE[DEFAULT_LANGUAGE]
             )
         return " ".join(answers)
+
+    decision = route(router_llm, grammar, question)
+    if decision.get("action") == "get_telemetry" and _has_vehicle_term_signal(question):
+        # No literal keyword matched a specific field above, but the
+        # router still thinks this is telemetry AND some fuzzy
+        # vehicle-term signal exists somewhere in the text - trust the
+        # router's semantic understanding for cases the keyword scan
+        # alone can't resolve (e.g. "how fast am I going").
+        target = decision.get("target")
+        value = cache.get(target)
+        if value is None:
+            return TELEMETRY_UNAVAILABLE_RESPONSE.get(
+                language, TELEMETRY_UNAVAILABLE_RESPONSE[DEFAULT_LANGUAGE]
+            )
+        return describe(target, value, language)
 
     # Deterministic gate, checked before the free-form model ever runs -
     # see RESORT_KNOWLEDGE_TRIGGERS in config.py for why prompting alone
