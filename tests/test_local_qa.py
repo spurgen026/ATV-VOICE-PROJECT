@@ -1,7 +1,12 @@
 import pytest
 
 from resort_atv_voice.can_telemetry import TelemetryCache
-from resort_atv_voice.local_qa import _detect_requested_fields, _has_vehicle_term_signal, answer_query
+from resort_atv_voice.local_qa import (
+    _detect_requested_fields,
+    _fuzzy_contains,
+    _has_vehicle_term_signal,
+    answer_query,
+)
 
 # Every real transcript captured during this project's live testing that
 # was used to tune the fuzzy vehicle-term safety net (see CLAUDE.md "V3
@@ -20,6 +25,7 @@ TRUE_CASES = [
     ("ஸ்பீட் எவ்வளவு இருக்கு", "existing router fewshot example"),
     ("நான் எவளோ ச்பீட்டில போயிட்டிருக்கேன்.", "live speed question, correctly routed"),
     ("what speed i am going in", "en speed"),
+    ("பாட்டிரியவளவு இருக்கு", "live: STT merged 'battery'+'how much' with no space"),
 ]
 
 FALSE_CASES = [
@@ -40,6 +46,33 @@ def test_vehicle_term_signal_detected(transcript, label):
 @pytest.mark.parametrize("transcript,label", FALSE_CASES, ids=[c[1] for c in FALSE_CASES])
 def test_vehicle_term_signal_not_detected(transcript, label):
     assert _has_vehicle_term_signal(transcript) is False
+
+
+class TestFuzzyContains:
+    """The windowed substring match found live 2026-08-08: STT sometimes
+    merges adjacent Tamil words with no space, and a whole-token-only
+    comparison tanks on the length mismatch even though the keyword is
+    clearly present inside. This specific bug made the vehicle-term
+    safety net override a *correct* router decision into a wrong one -
+    worth its own direct tests, not just coverage via the higher-level
+    functions that use it."""
+
+    def test_exact_match(self):
+        assert _fuzzy_contains("battery", "battery", 0.8) is True
+
+    def test_keyword_embedded_in_a_longer_merged_token(self):
+        # 'பாட்டிரியவளவு' = 'பாட்டிரிய' (battery-ish) + 'வளவு' (how much),
+        # no space - the exact live-captured failure.
+        assert _fuzzy_contains("பாட்டிரியவளவு", "பாட்டரி", 0.8) is True
+
+    def test_unrelated_short_word_does_not_match(self):
+        # Must not become so lenient that any short word matches anything -
+        # this is a safety net, false positives here are the dangerous
+        # direction (see VEHICLE_TERM_FUZZY_THRESHOLD's reasoning).
+        assert _fuzzy_contains("இருக்கு", "பேட்டரி", 0.8) is False
+
+    def test_keyword_longer_than_token_does_not_match(self):
+        assert _fuzzy_contains("கா", "பேட்டரி", 0.8) is False
 
 
 class TestDetectRequestedFields:

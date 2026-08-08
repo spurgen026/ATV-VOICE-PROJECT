@@ -20,6 +20,32 @@ from .small_talk import try_small_talk_answer
 History = List[Tuple[str, str]]
 
 
+def _fuzzy_contains(token: str, keyword: str, threshold: float) -> bool:
+    """True if `keyword` fuzzy-matches `token` as a whole, OR as a
+    substring embedded inside it.
+
+    Found live 2026-08-08: Tamil STT output sometimes merges adjacent
+    words with no space ('பாட்டிரியவளவு' = 'பாட்டிரிய' [battery] +
+    'வளவு' [how much], no gap) - comparing the whole merged token
+    against a short keyword tanks the SequenceMatcher ratio on length
+    alone, even though the keyword is clearly present. That specific
+    case made the vehicle-term safety net override a router decision
+    that was actually correct, turning a right answer into a wrong one -
+    the safety net built to prevent dangerous misroutes became the cause
+    of a different failure. Sliding a keyword-length window across the
+    token catches the embedded case without weakening the whole-token
+    check for the common case (single, unmerged tokens)."""
+    if difflib.SequenceMatcher(None, token, keyword).ratio() >= threshold:
+        return True
+    window = len(keyword)
+    if window >= len(token):
+        return False
+    return any(
+        difflib.SequenceMatcher(None, token[start : start + window], keyword).ratio() >= threshold
+        for start in range(len(token) - window + 1)
+    )
+
+
 def _has_vehicle_term_signal(text: str) -> bool:
     """Safety net for the router's get_telemetry decisions - see
     VEHICLE_TERM_KEYWORDS in config.py for the reasoning and threshold
@@ -27,7 +53,7 @@ def _has_vehicle_term_signal(text: str) -> bool:
     word rarely comes through with exact spelling."""
     tokens = text.split()
     return any(
-        difflib.SequenceMatcher(None, token, keyword).ratio() >= VEHICLE_TERM_FUZZY_THRESHOLD
+        _fuzzy_contains(token, keyword, VEHICLE_TERM_FUZZY_THRESHOLD)
         for token in tokens
         for keyword in VEHICLE_TERM_KEYWORDS
     )
@@ -47,7 +73,7 @@ def _detect_requested_fields(text: str) -> List[str]:
     matched = []
     for field, keywords in TELEMETRY_FIELD_KEYWORDS.items():
         if any(
-            difflib.SequenceMatcher(None, token, keyword).ratio() >= VEHICLE_TERM_FUZZY_THRESHOLD
+            _fuzzy_contains(token, keyword, VEHICLE_TERM_FUZZY_THRESHOLD)
             for token in tokens
             for keyword in keywords
         ):
