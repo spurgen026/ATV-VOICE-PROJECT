@@ -283,6 +283,18 @@ TELEMETRY_UNAVAILABLE_RESPONSE = {
     "ta": "சாரி, அது இன்னும் என்கிட்ட இல்ல.",
 }
 
+# V3 hardening round 2 (production hardening pass): main.py's per-turn
+# error handling speaks this instead of crashing the whole app when
+# something in transcribe()/answer_query()/speak() throws unexpectedly -
+# a stack trace and dead process is a much worse outcome mid-ride than an
+# apology and going back to sleep. Colloquial register, matching the
+# other Hindi/Tamil rewrites - same not-native-verified caveat.
+UNEXPECTED_ERROR_RESPONSE = {
+    "en": "Sorry, something went wrong there. Try again?",
+    "hi": "सॉरी, कुछ गड़बड़ हो गई। फिर से बोलिए?",
+    "ta": "சாரி, ஏதோ தவறு நடந்துடுச்சு. மறுபடி சொல்லுங்க?",
+}
+
 # V3 hardening round 2 continued (2026-08-08): deterministic safety net for
 # the router's remaining known-dangerous failure - a Tamil non-telemetry
 # question ('வெளியா வதர் எப்படி இருக்கு?', reads as "how's the weather

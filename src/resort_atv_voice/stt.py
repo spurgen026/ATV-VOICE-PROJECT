@@ -44,10 +44,29 @@ SILENCE_CHUNKS_TO_STOP = QUERY_TRAILING_SILENCE_MS // QUERY_CHUNK_MS
 MAX_CHUNKS = QUERY_MAX_MS // QUERY_CHUNK_MS
 
 
+# Used only if WHISPER_DEVICE fails to load - matches the compute type
+# this app used before GPU acceleration was added (V3 hardening round 2).
+CPU_FALLBACK_COMPUTE_TYPE = "int8"
+
+
 def load_model() -> WhisperModel:
-    return WhisperModel(
-        WHISPER_MODEL_SIZE, device=WHISPER_DEVICE, compute_type=WHISPER_COMPUTE_TYPE
-    )
+    """Loads Whisper on WHISPER_DEVICE, falling back to CPU if that fails.
+
+    A GPU-specific failure (missing CUDA runtime DLLs, no compatible GPU,
+    a driver mismatch) would otherwise crash the whole app at startup
+    instead of degrading to a slower-but-working CPU path. This is a real
+    risk, not a theoretical one: this app's eventual target hardware
+    (Raspberry Pi 5, see CLAUDE.md "Version 3 Plan") has no discrete GPU
+    at all, so this fallback is what keeps a laptop-tuned
+    WHISPER_DEVICE = "cuda" from being a hard requirement everywhere this
+    code runs."""
+    try:
+        return WhisperModel(WHISPER_MODEL_SIZE, device=WHISPER_DEVICE, compute_type=WHISPER_COMPUTE_TYPE)
+    except Exception as exc:
+        if WHISPER_DEVICE == "cpu":
+            raise
+        print(f"Whisper failed to load on device={WHISPER_DEVICE!r} ({exc}) - falling back to CPU.")
+        return WhisperModel(WHISPER_MODEL_SIZE, device="cpu", compute_type=CPU_FALLBACK_COMPUTE_TYPE)
 
 
 def record_query(speech_timeout_ms: int = QUERY_SPEECH_TIMEOUT_MS) -> np.ndarray:

@@ -2,7 +2,13 @@ import sounddevice as sd
 
 from . import stt, tts, wake_word
 from .can_telemetry import TelemetryCache, start_fake_ecu, start_listener
-from .config import FOLLOWUP_SPEECH_TIMEOUT_MS, QUERY_SPEECH_TIMEOUT_MS, STARTUP_GREETING
+from .config import (
+    DEFAULT_LANGUAGE,
+    FOLLOWUP_SPEECH_TIMEOUT_MS,
+    QUERY_SPEECH_TIMEOUT_MS,
+    STARTUP_GREETING,
+    UNEXPECTED_ERROR_RESPONSE,
+)
 from .local_qa import answer_query
 from .router import load_chat_model, load_grammar, load_router_model
 
@@ -46,7 +52,18 @@ def run() -> None:
             history = []
             while True:
                 audio = stt.record_query(speech_timeout_ms=speech_timeout_ms)
-                query, language = stt.transcribe(whisper_model, audio)
+                language = DEFAULT_LANGUAGE
+                try:
+                    query, language = stt.transcribe(whisper_model, audio)
+                except sd.PortAudioError:
+                    raise  # a dead audio device is fatal - let the outer handler stop the app
+                except Exception as exc:
+                    # A single bad turn (a model hiccup, a malformed
+                    # decode) must not take down an app meant to run
+                    # continuously in a moving vehicle - log it, go back
+                    # to sleep, and let the next wake word start clean.
+                    print(f"Error transcribing speech, recovering: {exc}")
+                    break
 
                 if not query:
                     if not heard_anything:
@@ -60,18 +77,32 @@ def run() -> None:
                 print(f"Heard ({language}): {query!r}")
                 heard_anything = True
 
-                response = answer_query(
-                    router_llm,
-                    router_grammar,
-                    telemetry_cache,
-                    query,
-                    chat_llm=chat_llm,
-                    history=history,
-                    language=language,
-                )
-                print(f"Responding: {response!r}")
-                tts.speak(voices, response, language)
-                history.append((query, response))
+                try:
+                    response = answer_query(
+                        router_llm,
+                        router_grammar,
+                        telemetry_cache,
+                        query,
+                        chat_llm=chat_llm,
+                        history=history,
+                        language=language,
+                    )
+                    print(f"Responding: {response!r}")
+                    tts.speak(voices, response, language)
+                    history.append((query, response))
+                except sd.PortAudioError:
+                    raise
+                except Exception as exc:
+                    print(f"Error answering or speaking, recovering: {exc}")
+                    try:
+                        tts.speak(
+                            voices,
+                            UNEXPECTED_ERROR_RESPONSE.get(language, UNEXPECTED_ERROR_RESPONSE[DEFAULT_LANGUAGE]),
+                            language,
+                        )
+                    except Exception:
+                        pass  # even the apology failed - just go back to sleep quietly
+                    break
 
                 speech_timeout_ms = FOLLOWUP_SPEECH_TIMEOUT_MS
     except sd.PortAudioError as exc:

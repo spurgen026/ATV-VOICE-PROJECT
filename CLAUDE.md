@@ -450,6 +450,20 @@ testing can begin. This is a Phase 2 blocker, not optional polish.
    comfortably real-time on CPU (Phase 3, ~0.85s avg) so lower
    priority; and the Jetson-vs-Pi-5 hardware decision (item 2) still
    changes what "target hardware" latency actually needs measuring.
+   **This GPU dependency is now flagged as the top production risk** -
+   see item 8.
+8. **New 2026-08-08: the biggest latency win this project has (GPU
+   Whisper, item 7) depends on hardware the actual target (Pi 5, item 2)
+   won't have at all.** `stt.load_model()` now falls back to CPU
+   automatically if GPU loading fails (see "Production hardening pass"),
+   so this can no longer crash the app - but the *latency* regression on
+   CPU-only hardware is real and unmeasured on anything but this laptop.
+   Not resolved: what STT latency actually looks like once real target
+   hardware is chosen and available to test on.
+9. **New 2026-08-08: no CI pipeline actually runs `tests/`
+   automatically.** The suite exists and passes (215 tests, 1 skip) but
+   nothing enforces it stays passing on future changes - currently only
+   run by hand.
 
 ### V3 environment setup (2026-08-07)
 
@@ -1234,6 +1248,103 @@ Closes the remaining piece of item #1 (multilingual routing): the Tamil
   Qwen2.5-3B's Tamil *generation* quality (as opposed to comprehension)
   hasn't been specifically evaluated. Tracked as a new open item, not
   investigated further this session.
+
+## Production hardening pass: real test suite + resilience (2026-08-08)
+
+Prompted by a direct question - "am I going in the right direction of
+making it a production level voice assistant?" Honest answer given:
+direction and rigor were right (measuring instead of assuming, gating
+LLM decisions deterministically instead of trusting self-restraint), but
+almost all of this project's effort had gone into accuracy/latency, not
+the separate axis "production" actually requires - test infrastructure,
+error resilience, and the fact that today's biggest win (GPU-accelerated
+STT) depends on hardware the real target (Pi 5) won't have. User chose
+to start on the first two now; the GPU-on-real-hardware risk remains
+open (see item 7 in "Open items").
+
+- **Real automated test suite, `tests/`, using `pytest`** - replaces the
+  pattern this whole project had used until now (`test_router_fix.py`,
+  `compare_whisper_sizes.py`, `benchmark_whisper_latency.py`, etc. - all
+  throwaway, run once by hand, never committed, per the project's own
+  established "not committed" convention for these). **215 tests, 1
+  documented skip, all passing** as of this commit:
+  - `test_small_talk.py`, `test_number_words.py`,
+    `test_can_telemetry.py`, `test_config_consistency.py` - fast,
+    pure-logic tests, no model loading (196 of the 215, run in well
+    under a second).
+  - `test_config_consistency.py` specifically exists to catch a class of
+    bug that's easy to introduce and easy to miss: every per-language
+    phrase table (`TELEMETRY_FIELD_PHRASES`,
+    `RESORT_KNOWLEDGE_UNAVAILABLE_RESPONSE`, `small_talk.py`'s
+    trigger/response tables, etc.) actually covers all 3 supported
+    languages, every telemetry field is present for every language, and
+    no response is silently empty.
+  - `test_local_qa.py`, `test_router.py` - the real, exact transcripts
+    captured live this session (both misroutes, the 8 benchmark
+    phrases, existing few-shot examples) are now permanent regression
+    tests instead of one-off manual verification that gets thrown away
+    after a single confirming run.
+  - `test_router.py::test_routing_decision` asserts on majority-of-3
+    calls, not a single shot, given the confirmed router non-determinism
+    (llama.cpp's threaded matmul reductions can flip a close decision
+    even at `temperature=0.0` - see "V3 hardening, round 2 continued").
+    A genuine regression still fails the suite; an isolated flip
+    doesn't.
+  - `test_stt.py` covers the new CPU-fallback logic below via
+    monkeypatching a fake `WhisperModel`, without needing to actually
+    break CUDA to prove the fallback path works.
+  - Model-loading tests marked `@pytest.mark.slow`, skipped by default
+    (`pytest tests/`, ~0.6s) - include them with `pytest tests/
+    --run-slow` (~55s). Keeping the default run fast is what makes a
+    suite something that actually gets run before a change, not an
+    occasional chore.
+  - **Known, deliberate gap**: `main.py`'s `run()` itself has no
+    automated test - it's an infinite loop directly driving real
+    hardware (mic, wake word, speakers), which this project has always
+    verified via live end-to-end runs, not unit tests, and that pattern
+    is kept rather than forcing an artificial mock-everything test. The
+    resilience changes inside it (below) are verified by direct code
+    review + import/syntax checks, not a dedicated test - an honest
+    limit of this pass, not an oversight.
+- **Two concrete resilience fixes, not a general audit for its own
+  sake** - picked because they're the two failure modes most likely to
+  actually happen and do the most damage:
+  1. **`stt.load_model()` now falls back to CPU if the configured device
+     fails to load.** This is the single highest-value fix here: this
+     session's own biggest win (`WHISPER_DEVICE = "cuda"`) is a hard
+     crash waiting to happen on any machine without a working
+     GPU/CUDA setup - including this project's own stated target
+     hardware, a Raspberry Pi 5, which has no discrete GPU at all. Catches
+     any load failure (missing DLLs, no GPU, driver mismatch) and retries
+     on CPU with `int8` rather than taking the whole app down at startup.
+     Verified two ways: `test_stt.py` proves the fallback logic itself
+     (mocked failure), and a direct real (non-mocked) call to
+     `stt.load_model()` confirms the happy path still works unchanged
+     when the GPU genuinely is available.
+  2. **`main.py`'s per-turn processing (transcribe → answer → speak) is
+     now wrapped so one bad turn can't crash the whole app.** Before this,
+     the only exception handling in the entire main loop was
+     `except sd.PortAudioError`, wrapping everything - any other
+     exception (a model hiccup, a malformed decode) would have killed
+     the process outright, unacceptable for something meant to run
+     continuously in a moving vehicle. Now: transcription errors and
+     answer/speak errors are each caught separately, logged, and recover
+     by going back to sleep for the next wake word - `sd.PortAudioError`
+     specifically still propagates to the outer handler (a dead audio
+     device is a different, more fatal condition, correctly left alone).
+     New `UNEXPECTED_ERROR_RESPONSE` (en/hi/ta, `config.py`) is spoken
+     when recovery is needed, wrapped in its own inner try/except so a
+     failing apology can't itself crash the app.
+- **`pyproject.toml`**: `requires-python` corrected from a stale
+  `>=3.9` (the project moved to 3.12 back in "V3 environment setup",
+  this line was never updated) to `>=3.12`; added
+  `[tool.pytest.ini_options]` with `testpaths` and the `slow` marker
+  registered. `requirements.txt` gained `pytest==9.1.1`.
+- **Not done this pass** (explicitly out of scope, not forgotten):
+  logging/monitoring infrastructure, crash recovery beyond the one loop
+  above, packaging/deployment story, config management for multiple
+  vehicles, a CI pipeline actually running this suite automatically.
+  Tracked as future production-hardening work, not silently dropped.
 
 ### Tech stack additions for V3
 
