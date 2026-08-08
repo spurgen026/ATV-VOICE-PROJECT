@@ -1363,6 +1363,84 @@ hardening, round 2"), `nvidia-cublas-cu12`/`nvidia-cudnn-cu12`/
 `nvidia-cuda-runtime-cu12` (redistributable CUDA runtime DLLs enabling
 that GPU path without a full CUDA Toolkit install).
 
+## Echo/feedback mitigation - partial fix (2026-08-08)
+
+Prompted by "other ideas to make this assistant more functionally sound" -
+the single most important gap identified: **every test of this app, ever,
+has used headphones**, which physically isolate the speaker output from
+the mic. The eventual target (onboard vehicle-mounted mics/speakers, see
+this file's product vision section) has no such isolation - the mic will
+pick up the assistant's own TTS/chime output. Worst case: an acoustic
+echo/reverb tail gets misread as the start of a new query right after the
+assistant finishes speaking.
+
+- **Real OS-level AEC exists (Windows WASAPI Audio Processing Objects),
+  deliberately not used.** Checked before assuming a fix was needed from
+  scratch - Windows does support real acoustic echo cancellation, but (a)
+  `sounddevice` (this app's audio library) doesn't expose it, and (b)
+  building against a Windows-specific API here would be wasted effort
+  regardless: the actual target hardware (Raspberry Pi 5) runs Linux, not
+  Windows, and would need a different, portable approach (e.g. WebRTC's
+  AEC module) anyway - the same "solved it for the wrong platform"
+  mistake the GPU dependency already taught this project not to repeat.
+- **Implemented instead: `MIC_SETTLE_MS` (300ms), a brief pause before
+  `stt.record_query()` starts actively listening**, giving any acoustic
+  tail from whatever just played (a response, a chime) time to dissipate
+  before RMS-based speech-start detection begins. Portable, works
+  identically regardless of target OS/hardware.
+- **Explicitly a partial mitigation, not real AEC** - it reduces the
+  window of risk but doesn't cancel echo the way true AEC does, and the
+  300ms figure is a reasonable guess, not tuned against real speaker/mic
+  placement (which doesn't exist yet - still running on a laptop with
+  headphones, so the actual problem this exists for can't be reproduced
+  to validate the fix against). Tracked as a real open item: proper AEC,
+  and re-tuning `MIC_SETTLE_MS` itself, both need real vehicle hardware.
+- **Tested**: `tests/test_stt.py` verifies the settle pause happens
+  *before* the input stream opens (not after, which would defeat the
+  purpose) via a mocked `sd.InputStream` - the kind of ordering bug that
+  could easily slip in silently during a later refactor without a test
+  catching it.
+
+## Custom wake word ("Hey EV") investigated, parked (2026-08-08)
+
+User asked to change the wake word from the placeholder `hey_jarvis_v0.1`
+to "Hey EV." Researched feasibility before building anything, rather than
+assuming - real findings:
+
+- **Not a pretrained swap.** openWakeWord only ships `hey_jarvis_v0.1`
+  locally (confirmed by listing the actual installed model files) -
+  other phrases need training a new model, not just a config change.
+- **Synthetic training is real and viable in principle** - openWakeWord's
+  actual custom-training approach (via `rhasspy/piper-sample-generator`)
+  synthesizes thousands of positive clips using Piper TTS across varied
+  voices, so it doesn't strictly require the user recording samples
+  themselves. This corrected an earlier assumption in this file that a
+  custom wake word was blocked on recorded audio.
+- **But the official training path is currently broken.**
+  openWakeWord's own `automatic_model_training.ipynb` Colab notebook is
+  confirmed bit-rotted since 2023 (real GitHub issues checked, not
+  assumed) - fails on Python 3.12/torchaudio 2.x incompatibilities,
+  `ModuleNotFoundError: No module named 'piper'` out of the box, at
+  least 8 separate failure points per one open issue.
+- **The only working fix found has real costs and low trust.** A
+  community fork (`alfiedennen/openwakeword-colab-2026`) claims to patch
+  all of these, but: requires **Colab Pro** (paid, not free Colab, needs
+  an L4 GPU + High RAM runtime), downloads **~25GB** of negative training
+  data (ACAV100M + FMA datasets), takes **75-90 minutes**, and is a very
+  low-trust source (1 star, 3 forks, no visible recent commit activity) -
+  running it means executing one person's largely unvetted code under
+  the user's own Google account.
+- **Decision: parked, not attempted**, given that cost/trust profile.
+  `WAKE_WORD_MODEL` stays `hey_jarvis_v0.1`. Revisit if openWakeWord's
+  official notebook gets fixed upstream, or if the user decides the
+  Colab Pro cost and trust tradeoff are acceptable anyway.
+- **Also flagged, not decided**: even setting aside training feasibility,
+  "Hey EV" is a short, fairly generic phrase ("EV" comes up in normal
+  conversation) with real false-positive risk compared to a more
+  distinctive phrase like "Hey ATV" - worth deciding before ever training
+  it for real, since changing the phrase later means retraining from
+  scratch.
+
 ## Unrelated sibling project — do not confuse
 
 There's a separate, unrelated EV ATV voice assistant project at

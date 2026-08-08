@@ -6,6 +6,7 @@ Tested by making a fake WhisperModel fail on the configured device and
 succeed on CPU, rather than needing to actually break CUDA to prove it.
 """
 
+import numpy as np
 import pytest
 
 from resort_atv_voice import stt
@@ -51,3 +52,51 @@ def test_load_model_succeeds_without_fallback_when_configured_device_works(monke
 
     model = stt.load_model()
     assert model.device == "cuda"
+
+
+class _FakeInputStream:
+    """Immediately reports silence, so record_query() hits its
+    speech_timeout_ms path and returns fast without a real audio device."""
+
+    def __init__(self, **kwargs):
+        pass
+
+    def __enter__(self):
+        return self
+
+    def __exit__(self, *args):
+        return False
+
+    def read(self, num_samples):
+        return np.zeros((num_samples, 1), dtype="int16"), False
+
+
+def test_record_query_settles_before_opening_the_input_stream(monkeypatch):
+    # Echo/feedback mitigation (see MIC_SETTLE_MS in config.py) only works
+    # if the settle pause happens BEFORE the mic starts listening, not
+    # after - this is exactly the kind of ordering bug that's easy to
+    # introduce silently in a later refactor.
+    call_order = []
+
+    def fake_sleep(seconds):
+        call_order.append(("sleep", seconds))
+
+    def fake_input_stream(**kwargs):
+        call_order.append(("stream_open",))
+        return _FakeInputStream(**kwargs)
+
+    monkeypatch.setattr(stt.time, "sleep", fake_sleep)
+    monkeypatch.setattr(stt.sd, "InputStream", fake_input_stream)
+
+    stt.record_query(speech_timeout_ms=stt.QUERY_CHUNK_MS)
+
+    assert call_order[0] == ("sleep", stt.MIC_SETTLE_MS / 1000)
+    assert call_order[1] == ("stream_open",)
+
+
+def test_record_query_returns_empty_array_when_nothing_is_heard(monkeypatch):
+    monkeypatch.setattr(stt.time, "sleep", lambda seconds: None)
+    monkeypatch.setattr(stt.sd, "InputStream", _FakeInputStream)
+
+    audio = stt.record_query(speech_timeout_ms=stt.QUERY_CHUNK_MS)
+    assert audio.size == 0

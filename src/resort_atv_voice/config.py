@@ -113,6 +113,26 @@ QUERY_TRAILING_SILENCE_MS = 800
 QUERY_SPEECH_TIMEOUT_MS = 3000
 QUERY_MAX_MS = 8000
 
+# Echo/feedback mitigation (2026-08-08): every test of this app so far has
+# used headphones, which physically isolate the speaker output from the
+# mic - the eventual target (onboard vehicle-mounted mics/speakers, see
+# product vision in this file's header) has no such isolation, and the mic
+# will pick up the assistant's own TTS/chime output. record_query() briefly
+# pauses before it starts actively listening for speech, so an acoustic
+# echo/reverb tail from whatever just played has time to dissipate before
+# the RMS-based speech-start detection begins - otherwise that tail risks
+# being misread as the start of a new query.
+#
+# This is a partial mitigation, not real acoustic echo cancellation (AEC) -
+# Windows does have OS-level AEC (WASAPI Audio Processing Objects), but
+# `sounddevice` doesn't expose it, and building against a Windows-specific
+# API here would be wasted effort anyway: the actual target hardware
+# (Raspberry Pi 5) runs Linux, not Windows, and would need a genuinely
+# different, portable AEC approach (e.g. WebRTC's AEC module) - one that
+# also needs real speaker/mic placement to tune against, which doesn't
+# exist yet. Tracked as a real open item, not solved here - see CLAUDE.md.
+MIC_SETTLE_MS = 300
+
 # After answering, listen for a follow-up without needing the wake word
 # again. Same VAD parameters as above, just a shorter, quieter timeout —
 # no "didn't catch that" if nobody follows up, it just goes back to sleep.

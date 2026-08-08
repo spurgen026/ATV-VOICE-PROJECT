@@ -21,6 +21,8 @@ _cuda_dll_dirs = [d for d in _cuda_dll_dirs if os.path.isdir(d)]
 if _cuda_dll_dirs:
     os.environ["PATH"] = os.pathsep.join(_cuda_dll_dirs) + os.pathsep + os.environ["PATH"]
 
+import time
+
 import numpy as np
 import sounddevice as sd
 from faster_whisper import WhisperModel
@@ -28,6 +30,7 @@ from faster_whisper import WhisperModel
 from .config import (
     DEFAULT_LANGUAGE,
     LANGUAGE_NAMES,
+    MIC_SETTLE_MS,
     QUERY_CHUNK_MS,
     QUERY_MAX_MS,
     QUERY_SILENCE_RMS_THRESHOLD,
@@ -74,7 +77,15 @@ def record_query(speech_timeout_ms: int = QUERY_SPEECH_TIMEOUT_MS) -> np.ndarray
     is detected. Gives up if speech never starts within speech_timeout_ms, or
     after QUERY_MAX_MS regardless, so a stuck mic can't hang the assistant
     forever. A shorter speech_timeout_ms is used for the post-answer
-    follow-up window vs. the initial post-wake-word listen."""
+    follow-up window vs. the initial post-wake-word listen.
+
+    Waits MIC_SETTLE_MS before opening the input stream - every call site
+    (after a chime, after a spoken response) follows something that just
+    played through the speaker, and on real (non-headphone) hardware the
+    mic would otherwise risk picking up that output's own acoustic tail as
+    if it were the start of a new query. See MIC_SETTLE_MS in config.py."""
+    time.sleep(MIC_SETTLE_MS / 1000)
+
     speech_timeout_chunks = speech_timeout_ms // QUERY_CHUNK_MS
     chunks = []
     speech_started = False
