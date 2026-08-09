@@ -21,6 +21,7 @@ _cuda_dll_dirs = [d for d in _cuda_dll_dirs if os.path.isdir(d)]
 if _cuda_dll_dirs:
     os.environ["PATH"] = os.pathsep.join(_cuda_dll_dirs) + os.pathsep + os.environ["PATH"]
 
+import logging
 import time
 
 import numpy as np
@@ -46,6 +47,8 @@ CHUNK_SAMPLES = int(SAMPLE_RATE * QUERY_CHUNK_MS / 1000)
 SILENCE_CHUNKS_TO_STOP = QUERY_TRAILING_SILENCE_MS // QUERY_CHUNK_MS
 MAX_CHUNKS = QUERY_MAX_MS // QUERY_CHUNK_MS
 
+logger = logging.getLogger(__name__)
+
 
 # Used only if WHISPER_DEVICE fails to load - matches the compute type
 # this app used before GPU acceleration was added (V3 hardening round 2).
@@ -68,7 +71,9 @@ def load_model() -> WhisperModel:
     except Exception as exc:
         if WHISPER_DEVICE == "cpu":
             raise
-        print(f"Whisper failed to load on device={WHISPER_DEVICE!r} ({exc}) - falling back to CPU.")
+        logger.warning(
+            "Whisper failed to load on device=%r (%s) - falling back to CPU.", WHISPER_DEVICE, exc
+        )
         return WhisperModel(WHISPER_MODEL_SIZE, device="cpu", compute_type=CPU_FALLBACK_COMPUTE_TYPE)
 
 

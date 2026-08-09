@@ -1,3 +1,5 @@
+import logging
+
 import sounddevice as sd
 
 from . import stt, tts, wake_word
@@ -10,13 +12,17 @@ from .config import (
     UNEXPECTED_ERROR_RESPONSE,
 )
 from .local_qa import answer_query
+from .logging_config import configure_logging
 from .router import load_chat_model, load_grammar, load_router_model, load_tamil_chat_model
 
 NO_SPEECH_RESPONSE = "Sorry, I didn't catch that."
 
+logger = logging.getLogger(__name__)
+
 
 def run() -> None:
-    print("Loading models...")
+    configure_logging()
+    logger.info("Loading models...")
     ww_model = wake_word.load_model()
     whisper_model = stt.load_model()
     voices = tts.load_voices()
@@ -32,14 +38,14 @@ def run() -> None:
     start_fake_ecu()
     start_listener(telemetry_cache)
 
-    print("Ready.")
+    logger.info("Ready.")
     tts.speak(voices, STARTUP_GREETING)
-    print("Say the wake word...")
+    logger.info("Say the wake word...")
 
     try:
         while True:
             wake_word.wait_for_wake_word(ww_model)
-            print("Wake word detected, listening...")
+            logger.info("Wake word detected, listening...")
             tts.play_ack_chime()
 
             # First listen requires the wake word; after any answer, keep
@@ -58,24 +64,24 @@ def run() -> None:
                     query, language = stt.transcribe(whisper_model, audio)
                 except sd.PortAudioError:
                     raise  # a dead audio device is fatal - let the outer handler stop the app
-                except Exception as exc:
+                except Exception:
                     # A single bad turn (a model hiccup, a malformed
                     # decode) must not take down an app meant to run
                     # continuously in a moving vehicle - log it, go back
                     # to sleep, and let the next wake word start clean.
-                    print(f"Error transcribing speech, recovering: {exc}")
+                    logger.exception("Error transcribing speech, recovering")
                     break
 
                 if not query:
                     if not heard_anything:
-                        print("No speech detected, going back to sleep.")
+                        logger.info("No speech detected, going back to sleep.")
                         tts.speak(voices, NO_SPEECH_RESPONSE)
                     else:
-                        print("No follow-up, going back to sleep.")
+                        logger.info("No follow-up, going back to sleep.")
                         tts.play_sleep_chime()
                     break
 
-                print(f"Heard ({language}): {query!r}")
+                logger.info("Heard (%s): %r", language, query)
                 heard_anything = True
 
                 try:
@@ -89,13 +95,13 @@ def run() -> None:
                         history=history,
                         language=language,
                     )
-                    print(f"Responding: {response!r}")
+                    logger.info("Responding: %r", response)
                     tts.speak(voices, response, language)
                     history.append((query, response))
                 except sd.PortAudioError:
                     raise
-                except Exception as exc:
-                    print(f"Error answering or speaking, recovering: {exc}")
+                except Exception:
+                    logger.exception("Error answering or speaking, recovering")
                     try:
                         tts.speak(
                             voices,
@@ -107,8 +113,8 @@ def run() -> None:
                     break
 
                 speech_timeout_ms = FOLLOWUP_SPEECH_TIMEOUT_MS
-    except sd.PortAudioError as exc:
-        print(f"Audio device error, stopping: {exc}")
+    except sd.PortAudioError:
+        logger.critical("Audio device error, stopping", exc_info=True)
 
 
 if __name__ == "__main__":

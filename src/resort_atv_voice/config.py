@@ -6,6 +6,14 @@ MODELS_DIR = ROOT_DIR / "models"
 DOCUMENTS_DIR = ROOT_DIR / "documents"
 INDEX_DIR = ROOT_DIR / "index"
 GRAMMARS_DIR = ROOT_DIR / "grammars"
+LOGS_DIR = ROOT_DIR / "logs"
+
+# Production hardening: real logging instead of print() (2026-08-09).
+# Rotating so a long-running vehicle process can't fill the disk with an
+# unbounded log file - 5MB per file, 3 backups kept (~20MB ceiling total).
+LOG_FILE = LOGS_DIR / "resort_atv_voice.log"
+LOG_MAX_BYTES = 5 * 1024 * 1024
+LOG_BACKUP_COUNT = 3
 
 VEHICLE_STATE_PATH = DATA_DIR / "vehicle_state.json"
 VEHICLE_STATUS_DOC_PATH = DOCUMENTS_DIR / "vehicle_status.txt"

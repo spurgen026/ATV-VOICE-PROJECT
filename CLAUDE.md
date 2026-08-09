@@ -1703,6 +1703,51 @@ assuming - real findings:
   it for real, since changing the phrase later means retraining from
   scratch.
 
+## Real logging, replacing print() everywhere (2026-08-09)
+
+Prompted by "what can we do next to make this more like a professional?"
+- picked as the first of several professional-polish items (others
+discussed but not started: linting/type checking, a real README, CI -
+blocked on no git remote existing yet, a decision left to the user).
+
+- **New `logging_config.py`**: `configure_logging()` sets up the root
+  logger with a console handler and a rotating file handler
+  (`logs/resort_atv_voice.log`, `LOG_MAX_BYTES`/`LOG_BACKUP_COUNT` in
+  `config.py` - 5MB × 3 backups, so a long-running vehicle process can't
+  fill the disk). `logs/` added to `.gitignore`. Called once, first
+  thing in `main.py`'s `run()`.
+- **Every `print()` in the codebase replaced** (17 call sites across
+  `main.py`, `stt.py`, `router.py`, `index_documents.py`, `rag.py` -
+  the latter two are the parked V2 path, updated for consistency even
+  though unused by the live app) - appropriate level chosen per case
+  (`INFO` for normal flow events, `WARNING` for degraded-but-recovered
+  situations like the GPU→CPU Whisper fallback or a Tamil-script retry,
+  `logger.exception()` inside except blocks so full tracebacks land in
+  the log, not just the exception message, `CRITICAL` for the one case
+  that actually stops the app - a dead audio device).
+- **Found and fixed a real side effect while verifying, not assumed
+  away**: configuring the root logger means *every* library's own
+  logging calls now flow through it too, not just this app's - tested
+  directly and found `httpx`/`huggingface_hub` log every HTTP HEAD
+  request (from `hf_hub_download()`'s cache check) at `INFO` level,
+  which would drown out the app's own messages in real use. Quieted
+  `httpx`/`httpcore`/`huggingface_hub`/`urllib3` to `WARNING`
+  specifically in `configure_logging()`, not globally - this app's own
+  loggers stay at whatever level was requested.
+- **Tested**: `tests/test_logging_config.py` - the log directory gets
+  created, both handlers get attached, the configured level is actually
+  applied, a logged message actually reaches the file (not just the
+  console), and the third-party noise-quieting works. Verified for real
+  too, not just via unit tests: ran the actual model-loading path with
+  logging active before and after the fix, confirmed the HTTP noise was
+  gone; confirmed Tamil-script log messages render correctly through
+  both the console and file handlers (a real risk given this session's
+  earlier UnicodeEncodeError issues running scripts a different way -
+  not an issue here since the app's own real terminal usage already
+  handled this correctly, but worth checking directly rather than
+  assuming the file handler would too - `encoding="utf-8"` set
+  explicitly on it). 248 tests passing, 1 documented skip.
+
 ## Unrelated sibling project — do not confuse
 
 There's a separate, unrelated EV ATV voice assistant project at

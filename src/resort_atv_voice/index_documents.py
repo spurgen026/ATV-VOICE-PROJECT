@@ -1,4 +1,5 @@
 import json
+import logging
 
 import faiss
 import numpy as np
@@ -14,6 +15,8 @@ from .documents import chunk_text, load_documents
 from .gemini_client import client
 
 EMBED_BATCH_SIZE = 90
+
+logger = logging.getLogger(__name__)
 
 
 def embed_texts(texts: list[str]) -> list[list[float]]:
@@ -36,11 +39,11 @@ def build_index() -> None:
             metadata.append({"source": source, "text": chunk})
 
     if not chunks:
-        print("No documents found in documents/ - nothing to index.")
+        logger.warning("No documents found in documents/ - nothing to index.")
         return
 
     sources = {m["source"] for m in metadata}
-    print(f"Embedding {len(chunks)} chunks from {len(sources)} document(s)...")
+    logger.info("Embedding %d chunks from %d document(s)...", len(chunks), len(sources))
     vectors = embed_texts(chunks)
 
     dim = len(vectors[0])
@@ -52,8 +55,9 @@ def build_index() -> None:
     with open(INDEX_METADATA_PATH, "w") as f:
         json.dump(metadata, f, indent=2)
 
-    print(f"Indexed {len(chunks)} chunks -> {FAISS_INDEX_PATH}")
+    logger.info("Indexed %d chunks -> %s", len(chunks), FAISS_INDEX_PATH)
 
 
 if __name__ == "__main__":
+    logging.basicConfig(level=logging.INFO, format="%(levelname)-8s %(message)s")
     build_index()

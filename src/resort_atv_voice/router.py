@@ -1,4 +1,5 @@
 import json
+import logging
 from typing import List, Optional, Tuple
 
 from huggingface_hub import hf_hub_download
@@ -27,6 +28,8 @@ from .config import (
 )
 
 History = List[Tuple[str, str]]
+
+logger = logging.getLogger(__name__)
 
 
 def load_router_model() -> Llama:
@@ -121,5 +124,5 @@ def generate_chat_reply(
         text = result["choices"][0]["message"]["content"].strip()
         if language != "ta" or _script_ratio(text, TAMIL_UNICODE_RANGE) >= TAMIL_SCRIPT_MIN_RATIO:
             return text
-        print(f"generate_chat_reply: attempt {attempt + 1} didn't come back in Tamil script, retrying")
+        logger.warning("generate_chat_reply: attempt %d didn't come back in Tamil script, retrying", attempt + 1)
     return text

@@ -1,4 +1,5 @@
 import json
+import logging
 from typing import List, Optional, Tuple
 
 import faiss
@@ -24,6 +25,8 @@ UNAVAILABLE_RESPONSE = "Sorry, I'm having trouble reaching the assistant right n
 GEMINI_ERRORS = (errors.APIError, httpx.HTTPError)
 
 History = List[Tuple[str, str]]
+
+logger = logging.getLogger(__name__)
 
 
 def load_index():
@@ -82,10 +85,10 @@ def answer_query(
             config=types.GenerateContentConfig(system_instruction=RAG_SYSTEM_PROMPT),
         )
         return resp.text.strip()
-    except GEMINI_ERRORS as exc:
-        print(f"Gemini call failed: {exc}")
+    except GEMINI_ERRORS:
+        logger.exception("Gemini call failed")
         local_answer = try_local_answer(question)
         if local_answer:
-            print(f"Answered locally instead: {local_answer!r}")
+            logger.info("Answered locally instead: %r", local_answer)
             return local_answer
         return UNAVAILABLE_RESPONSE
