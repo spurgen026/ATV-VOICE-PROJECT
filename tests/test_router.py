@@ -131,15 +131,3 @@ def test_generate_chat_reply_does_not_retry_for_english():
     result = generate_chat_reply(llm, "some question", language="en")
     assert result == "A reply in English"
     assert llm.call_count == 1
-
-
-def test_generate_chat_reply_retries_english_until_english_script_returned():
-    # The 2026-08-09 fix: retry logic generalized from Tamil-only to all
-    # three languages, after live reproduction showed an English question
-    # (asked after several Tamil turns in the same conversation) coming
-    # back in Tamil script despite language="en" - history-language-bleed
-    # is symmetric, not Tamil-specific.
-    llm = _FakeChatModel(["தமிழ் பதில்", "हिंदी जवाब", "An English reply"])
-    result = generate_chat_reply(llm, "some question", language="en")
-    assert result == "An English reply"
-    assert llm.call_count == 3

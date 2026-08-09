@@ -35,8 +35,8 @@ def test_telemetry_unavailable_response_covers_every_language():
     assert set(config.TELEMETRY_UNAVAILABLE_RESPONSE) == SUPPORTED_LANGUAGES
 
 
-def test_chat_unavailable_response_covers_every_language():
-    assert set(config.CHAT_UNAVAILABLE_RESPONSE) == SUPPORTED_LANGUAGES
+def test_resort_knowledge_unavailable_response_covers_every_language():
+    assert set(config.RESORT_KNOWLEDGE_UNAVAILABLE_RESPONSE) == SUPPORTED_LANGUAGES
 
 
 def test_small_talk_response_tables_cover_every_language():
@@ -67,7 +67,7 @@ def test_no_response_table_has_an_empty_string():
     # digit-vocabulary bug number_words.py exists to prevent.
     tables = [
         config.TELEMETRY_UNAVAILABLE_RESPONSE,
-        config.CHAT_UNAVAILABLE_RESPONSE,
+        config.RESORT_KNOWLEDGE_UNAVAILABLE_RESPONSE,
         small_talk.THANKS_RESPONSE,
         small_talk.CAPABILITY_RESPONSE,
         small_talk.IDENTITY_RESPONSE,
@@ -80,3 +80,7 @@ def test_no_response_table_has_an_empty_string():
 
 def test_vehicle_term_keywords_is_non_empty():
     assert len(config.VEHICLE_TERM_KEYWORDS) > 0
+
+
+def test_resort_knowledge_triggers_is_non_empty():
+    assert len(config.RESORT_KNOWLEDGE_TRIGGERS) > 0

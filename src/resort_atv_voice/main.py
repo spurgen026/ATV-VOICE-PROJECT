@@ -11,9 +11,14 @@ from .config import (
     STARTUP_GREETING,
     UNEXPECTED_ERROR_RESPONSE,
 )
-from .local_qa import answer_query
+from .local_qa import History, answer_query
 from .logging_config import configure_logging
-from .router import load_grammar, load_router_model
+from .router import (
+    load_chat_model,
+    load_grammar,
+    load_router_model,
+    load_tamil_chat_model,
+)
 
 NO_SPEECH_RESPONSE = "Sorry, I didn't catch that."
 
@@ -28,6 +33,8 @@ def run() -> None:
     voices = tts.load_voices()
     router_llm = load_router_model()
     router_grammar = load_grammar()
+    chat_llm = load_chat_model()
+    tamil_chat_llm = load_tamil_chat_model()
 
     # No real ATV CAN bus exists yet - start_fake_ecu() stands in for one.
     # On real hardware this line goes away; start_listener() just points
@@ -50,8 +57,11 @@ def run() -> None:
             # listening for a follow-up without it, for as long as the user
             # keeps talking. Silence on the follow-up just goes back to
             # sleep quietly - only the very first miss gets a spoken nudge.
+            # History resets every wake-word cycle - it's short-term memory
+            # for one conversation, not carried across sleep.
             speech_timeout_ms = QUERY_SPEECH_TIMEOUT_MS
             heard_anything = False
+            history: History = []
             while True:
                 audio = stt.record_query(speech_timeout_ms=speech_timeout_ms)
                 language = DEFAULT_LANGUAGE
@@ -80,9 +90,19 @@ def run() -> None:
                 heard_anything = True
 
                 try:
-                    response = answer_query(router_llm, router_grammar, telemetry_cache, query, language=language)
+                    response = answer_query(
+                        router_llm,
+                        router_grammar,
+                        telemetry_cache,
+                        query,
+                        chat_llm=chat_llm,
+                        tamil_chat_llm=tamil_chat_llm,
+                        history=history,
+                        language=language,
+                    )
                     logger.info("Responding: %r", response)
                     tts.speak(voices, response, language)
+                    history.append((query, response))
                 except sd.PortAudioError:
                     raise
                 except Exception:
