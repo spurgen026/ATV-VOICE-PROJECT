@@ -1,16 +1,19 @@
 import numpy as np
 import sounddevice as sd
 from openwakeword.model import Model
-from openwakeword.utils import download_models
 
-from .config import SAMPLE_RATE, WAKE_WORD_MODEL, WAKE_WORD_THRESHOLD
+from .config import SAMPLE_RATE, WAKE_WORD_MODEL, WAKE_WORD_MODEL_PATH, WAKE_WORD_THRESHOLD
 
 FRAME_SAMPLES = 1280  # 80ms at 16kHz, openWakeWord's expected chunk size
 
 
 def load_model() -> Model:
-    download_models([WAKE_WORD_MODEL])
-    return Model(wakeword_models=[WAKE_WORD_MODEL], inference_framework="onnx")
+    # WAKE_WORD_MODEL_PATH is a real local .onnx file (custom-trained "Hey
+    # EV" model), not a name from openWakeWord's pretrained catalog - no
+    # download_models() call needed/possible for it. openWakeWord derives
+    # the predictions-dict key from the file's stem ("hey_ev"), matching
+    # WAKE_WORD_MODEL in config.py.
+    return Model(wakeword_models=[str(WAKE_WORD_MODEL_PATH)], inference_framework="onnx")
 
 
 def wait_for_wake_word(model: Model) -> None:

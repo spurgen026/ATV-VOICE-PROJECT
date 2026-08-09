@@ -9,3 +9,5 @@ models/*.onnx.json
 .env
 index/
 logs/
+wakeword_training/data/
+wakeword_training/output/

@@ -1,0 +1,128 @@
+# First attempt at a custom "Hey EV" wake word, trained locally with
+# livekit-wakeword instead of the broken openWakeWord Colab notebook
+# (see CLAUDE.md "Custom wake word ("Hey EV") investigated, parked").
+# Exports an ONNX file backward-compatible with openWakeWord, so it
+# drops into wake_word.py in place of hey_jarvis_v0.1 without any
+# pipeline changes.
+#
+# "Hey EV" was chosen over "Hey ATV" despite a known, real risk flagged
+# before training even started: "EV" is a real word riders will say in
+# normal conversation about the vehicle itself ("this EV is great"),
+# and "hey EV" spoken quickly collapses phonetically toward "heavy" -
+# both are addressed below via custom_negative_phrases, not left to
+# chance.
+
+model_name: hey_ev
+
+# Spelling variations so different pronunciations of the acronym are
+# all covered - "EV" could come out as the letters or as a blended word.
+target_phrases:
+  - "hey EV"
+  - "hey e v"
+  - "hey ee vee"
+
+# ============================================================================
+# Data Generation - quick-experiment scale (this doc's own suggested
+# range is 5000-10000 for quick experiments, 20000+ for production).
+# First attempt - meant to be evaluated and re-tuned, not a final model.
+# ============================================================================
+
+n_samples: 8000
+n_samples_val: 1200
+n_background_samples: 1000
+n_background_samples_val: 250
+
+# 4GB VRAM (RTX 3050 laptop) - the doc's own suggestion (50 for 8GB GPU)
+# halved as a conservative starting point, not measured yet.
+tts_batch_size: 25
+
+# Adversarial negatives - phrases that must NOT trigger. Two real,
+# foreseeable confusions for this specific phrase, not generic filler:
+#   1. "heavy" - "hey EV" run together phonetically collapses toward it.
+#   2. "EV" alone, or in an ordinary sentence - riders will genuinely say
+#      this word when talking ABOUT the vehicle, not TO it. This is the
+#      exact false-positive risk flagged before "Hey EV" was chosen over
+#      "Hey ATV" (see CLAUDE.md) - mitigated here, not ignored.
+custom_negative_phrases:
+  - "heavy"
+  - "heavy duty"
+  - "achieve"
+  - "believe"
+  - "receive"
+  - "hey Kevin"
+  - "hey Steve"
+  - "hey Devin"
+  - "hey Bev"
+  - "hey Abby"
+  - "hey Eve"
+  - "have you"
+  - "have EV"
+  - "the EV"
+  - "an EV"
+  - "this EV"
+  - "our EV"
+  - "EV battery"
+  - "EV charging"
+  - "EV range"
+  - "hey"
+
+# ============================================================================
+# TTS Parameters (VITS + SLERP speaker blending) - left at prod.yaml's
+# defaults, no reason yet to deviate.
+# ============================================================================
+
+noise_scales: [0.98]
+noise_scale_ws: [0.98]
+length_scales: [0.75, 1.0, 1.25]
+slerp_weights: [0.2, 0.35, 0.5, 0.65, 0.8]
+
+# ============================================================================
+# Paths - deliberately NOT the library's ./data default, which would
+# collide with this project's own data/vehicle_state.json. Everything
+# lands under wakeword_training/ (gitignored - large binary training
+# artifacts, same convention as models/*.onnx).
+# ============================================================================
+
+data_dir: ./wakeword_training/data
+output_dir: ./wakeword_training/output
+
+# ============================================================================
+# Augmentation
+# ============================================================================
+
+augmentation:
+  clip_duration: 2.0
+  batch_size: 16
+  rounds: 2 # doc: 1 for quick training, 2-3 for better generalization
+  background_paths: [./wakeword_training/data/backgrounds]
+  rir_paths: [./wakeword_training/data/rirs]
+
+# ============================================================================
+# Model Architecture - "small", matching the actual target hardware
+# (Raspberry Pi 5 / embedded), not "medium"/"large" which the doc scopes
+# for server-class hardware this project isn't deploying to.
+# ============================================================================
+
+model:
+  model_type: conv_attention # best temporal awareness per the doc
+  model_size: small
+
+# ============================================================================
+# Training - quick-experiment scale, see n_samples note above. Batch
+# composition's ACAV100M_sample cut from the prod default (1024) to fit
+# comfortably in 4GB VRAM - a first guess, not a measurement; retune if
+# training OOMs or undertrains.
+# ============================================================================
+
+steps: 30000
+learning_rate: 0.0001
+weight_decay: 0.01
+label_smoothing: 0.05
+max_negative_weight: 1500
+target_fp_per_hour: 0.3
+
+batch_n_per_class:
+  positive: 50
+  adversarial_negative: 50
+  ACAV100M_sample: 256
+  background_noise: 50

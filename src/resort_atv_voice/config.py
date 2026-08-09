@@ -47,10 +47,20 @@ If the answer is not found in the provided context, reply exactly:
 "I couldn't find that information in the provided documents."
 Never guess, even to be helpful."""
 
-# Placeholder wake word until a custom "resort ATV" wake word is trained.
-# openWakeWord ships this one pretrained; say "Hey Jarvis" to trigger listening.
-WAKE_WORD_MODEL = "hey_jarvis_v0.1"
-WAKE_WORD_THRESHOLD = 0.3
+# Custom "Hey EV" wake word, trained locally 2026-08-09 with livekit-wakeword
+# (openWakeWord's own official training notebook was confirmed broken - see
+# CLAUDE.md "Custom wake word ("Hey EV") investigated, parked"). Replaces the
+# hey_jarvis_v0.1 placeholder used since V1. WAKE_WORD_MODEL_PATH is a real
+# local .onnx file (models/hey_ev.onnx, gitignored like the Piper voices),
+# not a name from openWakeWord's own pretrained catalog - load_model() must
+# NOT call download_models() for this one. The name "hey_ev" (used as the
+# openWakeWord predictions-dict key) comes from the file's stem.
+# Threshold 0.25 is the model's own auto-calibrated optimal value from
+# training (FPPH=0.27, recall=0.864 on the validation set), not the 0.3
+# openWakeWord default tuned for hey_jarvis_v0.1.
+WAKE_WORD_MODEL = "hey_ev"
+WAKE_WORD_MODEL_PATH = MODELS_DIR / "hey_ev.onnx"
+WAKE_WORD_THRESHOLD = 0.25
 
 # V3: multilingual (Tamil/Hindi/English) auto-detect needs a non-".en"
 # model - the ".en" variants are English-only and cannot transcribe the

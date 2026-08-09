@@ -1846,6 +1846,171 @@ testing do). Still worth doing - low cost, and it found real things.
   exact branch that had the `NameError` risk, confirming it actually
   works now, not just that mypy stopped complaining.
 
+## Custom "Hey EV" wake word trained and live, via livekit-wakeword (2026-08-09)
+
+Follow-up to "Custom wake word ("Hey EV") investigated, parked" above -
+that session found openWakeWord's own training notebook broken and
+parked the idea rather than run an unvetted community fork. This
+session found a real alternative and used it: `livekit-wakeword`
+(`github.com/livekit/livekit-wakeword`), a legitimate, actively
+maintained LiveKit project (not a sketchy fork) that trains a custom
+wake word from scratch with synthetic TTS data - no recordings needed -
+and exports an ONNX file **backward-compatible with openWakeWord**, so
+it drops into the existing pipeline unchanged. Picovoice Porcupine was
+the other real option found (free tier, web-console training, genuinely
+offline inference incl. Raspberry Pi) but not used - it's proprietary
+and capped at 3 active users/month, against this project's local/open-
+source bias.
+
+**User explicitly chose "Hey EV" over "Hey ATV"** despite the
+false-positive risk flagged in the parked investigation (bare "EV" is
+a word riders will say about the vehicle itself) - mitigated via
+adversarial-negative training data, not avoided by phrase choice.
+
+### Environment setup (Windows-specific real blockers, each found by
+### testing, not anticipated)
+
+- **`pip install "livekit-wakeword[train,eval,export]"`** - installed
+  clean, prebuilt Windows wheels throughout, no build-from-source
+  issues. Downgraded numpy 2.5.1→2.4.6 as part of dependency resolution
+  - `pip check` confirmed no conflicts.
+- **`espeak-ng` (Piper's phonemizer dependency) has no Windows portable
+  build** - only a Windows MSI installer and an Android APK on its
+  GitHub releases, despite the library's own error message only
+  documenting macOS/Linux install commands. The MSI **requires
+  administrator elevation** (`Error 1925`) even for a per-user-scoped
+  install attempt - same "needs one elevated command, spelled out
+  numbered" pattern as the `LongPathsEnabled` registry fix in "V3
+  environment setup". Installed via elevated `msiexec` with
+  `INSTALLDIR=D:\DevTools\espeak-ng` to honor the C-drive-space
+  convention ([[feedback_c_drive_low_storage]]) rather than the default
+  Program Files path - confirmed via registry uninstall-key lookup
+  after an initial silent (`/qn`) attempt appeared to succeed but
+  actually hadn't (silent failure looks identical to silent success
+  without checking).
+- **CUDA-enabled torch installed specifically for this training job**
+  (`torch==2.13.0+cu130`, `torchaudio==2.11.0+cu130` from
+  `download.pytorch.org/whl/cu130`) - the project's existing torch
+  install was a deliberate CPU-only build (chosen for MMS-TTS). Unlike
+  the LLM-chat-model GPU experiment earlier this session (reverted -
+  VRAM too tight to share with Whisper), wake-word training is a
+  one-time, standalone job with no other model competing for VRAM, so
+  the tradeoff was different and GPU was worth it here - confirmed live
+  by comparing against the CPU torch's own batch design (the library
+  ships a cloud-GPU training config by default, implying CPU was never
+  really a viable target). PyTorch's Windows CUDA wheels bundle their
+  own runtime DLLs - no repeat of the CTranslate2/llama-cpp-python
+  PATH-prepend DLL saga from earlier sessions.
+- **`torch.onnx.export`'s own verbose logging crashed the final export
+  step** - it tries to print a ✅ character, and this Windows console's
+  default stdout codepage (`cp1252`) can't encode it, raising
+  `UnicodeEncodeError` *after* the actual export had already succeeded
+  internally, aborting before the file got written. Fixed with
+  `PYTHONIOENCODING=utf-8` - the same class of Windows-console-encoding
+  issue flagged as a real risk in "Linting + type checking"'s logging
+  work, now hit for real in a different tool.
+
+### A real self-inflicted mistake, caught and fixed properly: training
+### started on empty data
+
+`augment`'s log line `"Augmentation complete!"` refers only to the
+noise/reverb augmentation *rounds* - a separate, much slower **feature
+extraction** phase (CPU-bound ONNX inference, ~8-12 clips/sec across
+~40,000 augmented clips, ~35-40 minutes total) runs afterward as part
+of the same command, ending in a *different* log line
+(`"Feature extraction complete!"`). Misread the first as the real
+completion signal and started `train` while extraction was still
+running in the background - `positive_features_train.npy` and
+`negative_features_train.npy` didn't exist yet, so the trainer silently
+skipped those classes and immediately crashed with
+`RuntimeError: Input type (struct c10::Half) and bias type (float)
+should be the same`.
+
+**Root-caused rather than patched**: the ACAV100M feature file is
+stored as float16 (`..._16bit.npy`, to halve its 16GB footprint). With
+it as the *only* loaded class (positive/negative/background all
+missing), `np.stack()` had nothing else to upcast against, so the batch
+stayed float16 and hit the model's float32 weights. This confirmed the
+dtype crash was a **downstream symptom of the premature start, not a
+real library bug** - no code patch needed. Let feature extraction
+actually finish (confirmed via the real `"Feature extraction complete!"`
+log line and the six expected `.npy` files existing on disk, not just
+another log line) and reran `train` clean - loaded normally, no crash,
+since a mixed-dtype batch upcasts to float32 automatically.
+
+### Training results
+
+Config: `wakeword_training/configs/hey_ev.yaml` - "quick experiment"
+scale per the library's own suggested range (8,000 positive samples,
+30,000 steps, `conv_attention`/`small` architecture matching the actual
+embedded target hardware, not server-scale `medium`/`large`), not the
+library's "production" scale (20,000+ samples, 50,000-100,000 steps).
+`custom_negative_phrases` included two specific, foreseeable
+confusions identified *before* training, not discovered after: "heavy"
+(phonetic collapse of "hey EV") and bare "EV"/"the EV"/"an EV" (riders
+talking about the vehicle, not to it) - the exact false-positive risk
+flagged when "Hey EV" was chosen over "Hey ATV".
+
+Training itself was fast once actually running correctly - all three
+phases (full training, refinement, fine-tuning) plus checkpoint
+averaging and threshold optimization finished in **~6.6 minutes** on
+the RTX 3050 (~79 steps/sec for the main 30,000-step phase), nowhere
+near the hours originally estimated before real throughput was known.
+Auto-calibrated optimal threshold: **0.25** (vs. openWakeWord's 0.3
+default, which was tuned for `hey_jarvis_v0.1`, not this model) -
+**86.4% recall, 93.2% accuracy, 0.27 false positives/hour** on the
+validation set.
+
+**Verified two ways before trusting it**: (1) loading the exported
+ONNX through the project's actual `wake_word.load_model()` path,
+confirming the predictions-dict key is `"hey_ev"` (derived from the
+filename stem, since this is a real local file path now, not a name
+from openWakeWord's pretrained catalog) and that it scores ~0.0 on
+silence; (2) synthesizing real "Hey EV" audio through the project's own
+Piper TTS and feeding it through the model frame-by-frame like the real
+pipeline does. This surfaced a real, honestly-reported finding: two
+synthesis calls of the identical text scored 0.28 and 0.09 - initially
+looked like a reliability bug, but isolating the variable (feeding the
+*exact same* audio array through a freshly-reset model three times)
+showed only minor variance (0.33-0.38), so the swing was mostly Piper's
+own TTS non-determinism (VITS's stochastic duration predictor produces
+different-length audio for identical text, shifting phrase alignment
+within detection frames) - consistent with the 86.4% recall the
+training metrics already predicted, not a new problem. Negative-phrase
+tests (unrelated speech, "heavy rain," "the battery on this EV is
+great") all scored well below threshold.
+
+### Integration
+
+- `models/hey_ev.onnx` (172KB, gitignored like the Piper voices).
+- `config.py`: `WAKE_WORD_MODEL = "hey_ev"` (was `"hey_jarvis_v0.1"`),
+  new `WAKE_WORD_MODEL_PATH = MODELS_DIR / "hey_ev.onnx"`,
+  `WAKE_WORD_THRESHOLD` updated `0.3` → `0.25`.
+- `wake_word.py`'s `load_model()` no longer calls openWakeWord's
+  `download_models()` (that's only for names in its own pretrained
+  catalog) - passes the local `.onnx` path to `Model(wakeword_models=
+  [...])` directly.
+- Full test suite still 228 passing/21 skipped (fast run); `ruff` clean;
+  `mypy` clean except one pre-existing, unrelated finding in the parked
+  V2 `index_documents.py` (dependency drift in `google-genai`'s stubs,
+  confirmed via `git diff` to predate this session's changes, not
+  investigated further since that file isn't in the live path).
+
+### Known limitation, not yet resolved
+
+**Not yet live-tested with a real human voice** - every test so far
+used synthetic Piper TTS audio, same blind spot this project's own
+noise-robustness work already flagged for STT/wake-word testing more
+generally. 86.4% recall means it will sometimes miss a genuine spoken
+"Hey EV" (not zero-risk, same as the original `hey_jarvis_v0.1` at its
+own tuned threshold required live retuning from 0.5→0.3 after real
+missed detections). If live testing shows recall is too low in
+practice, the natural next step is scaling up the "quick experiment"
+config (more samples, more steps) toward the library's own suggested
+production range, now that the whole pipeline (env setup, data
+generation, training, export, integration) is proven working end to
+end on this machine - a re-run, not a re-investigation.
+
 ## Unrelated sibling project — do not confuse
 
 There's a separate, unrelated EV ATV voice assistant project at
