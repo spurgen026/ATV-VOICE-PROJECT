@@ -1,5 +1,4 @@
 import json
-from typing import Optional
 
 from .config import DOCUMENTS_DIR, VEHICLE_STATE_PATH, VEHICLE_STATUS_DOC_PATH
 
@@ -9,7 +8,7 @@ def get_vehicle_state() -> dict:
         return json.load(f)
 
 
-def try_local_answer(question: str) -> Optional[str]:
+def try_local_answer(question: str) -> str | None:
     """Keyword-matched answer straight from vehicle_state.json, no cloud
     call needed. Used as a fallback when Gemini is unreachable, so vehicle
     stats stay answerable offline even though document Q&A doesn't.

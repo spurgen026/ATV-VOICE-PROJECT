@@ -24,7 +24,7 @@ FIELD_TO_CAN_ID = {field: can_id for can_id, field in CAN_ID_TO_FIELD.items()}
 def encode_frame(field: str, value: float) -> can.Message:
     can_id = FIELD_TO_CAN_ID[field]
     return can.Message(
-        arbitration_id=can_id, data=bytes([int(round(value)) & 0xFF]), is_extended_id=False
+        arbitration_id=can_id, data=bytes([round(value) & 0xFF]), is_extended_id=False
     )
 
 

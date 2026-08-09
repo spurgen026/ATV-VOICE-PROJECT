@@ -416,6 +416,13 @@ TELEMETRY_FIELD_KEYWORDS = {
         "temperature", "टेम्परेचर", "तापमान", "டெம்பரேச்சர்", "வெப்பநிலை",
     ),
     "speed_kmh": (
+        # "fast" deliberately NOT added, 2026-08-09: tried it (see
+        # CLAUDE.md) to fix "how fast am I going" falling through to
+        # unguarded chat, but it fuzzy-matched "fasting" and "breakfast"
+        # as false positives via the windowed substring matcher - a real
+        # regression risk (an unrelated question wrongly answered as a
+        # telemetry one), worse than the gap it would have fixed. Caught
+        # by testing before shipping it, not assumed safe.
         "speed", "स्पीड", "ஸ்பீட்", "ச்பீட்", "வேகம்", "வேகத்தில்",
     ),
 }

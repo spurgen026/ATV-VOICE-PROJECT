@@ -1,4 +1,3 @@
-from typing import Optional
 
 from .config import DEFAULT_LANGUAGE
 
@@ -79,7 +78,7 @@ def _matches(text: str, language: str, table: dict) -> bool:
     return any(phrase in text for phrase in phrases)
 
 
-def try_small_talk_answer(question: str, language: str = DEFAULT_LANGUAGE) -> Optional[str]:
+def try_small_talk_answer(question: str, language: str = DEFAULT_LANGUAGE) -> str | None:
     text = f" {question.lower().strip()} "
 
     if _matches(text, language, THANKS):

@@ -20,11 +20,19 @@ logger = logging.getLogger(__name__)
 
 
 def embed_texts(texts: list[str]) -> list[list[float]]:
-    vectors = []
+    vectors: list[list[float]] = []
     for i in range(0, len(texts), EMBED_BATCH_SIZE):
         batch = texts[i : i + EMBED_BATCH_SIZE]
         resp = client.models.embed_content(model=GEMINI_EMBEDDING_MODEL, contents=batch)
-        vectors.extend(e.values for e in resp.embeddings)
+        if not resp.embeddings:
+            # Offline, one-shot indexing script - fail loudly and clearly
+            # rather than silently skip a batch, unlike rag.py's live
+            # answer_query() which degrades gracefully instead.
+            raise RuntimeError(f"embed_content returned no embeddings for batch starting at index {i}")
+        for e in resp.embeddings:
+            if e.values is None:
+                raise RuntimeError(f"embed_content returned an embedding with no values (batch index {i})")
+            vectors.append(e.values)
     return vectors
 
 

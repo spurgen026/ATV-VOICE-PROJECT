@@ -1,5 +1,4 @@
 import difflib
-from typing import List, Optional, Tuple
 
 from llama_cpp import Llama, LlamaGrammar
 
@@ -17,7 +16,7 @@ from .config import (
 from .router import generate_chat_reply, route
 from .small_talk import try_small_talk_answer
 
-History = List[Tuple[str, str]]
+History = list[tuple[str, str]]
 
 
 def _fuzzy_contains(token: str, keyword: str, threshold: float) -> bool:
@@ -59,7 +58,7 @@ def _has_vehicle_term_signal(text: str) -> bool:
     )
 
 
-def _detect_requested_fields(text: str) -> List[str]:
+def _detect_requested_fields(text: str) -> list[str]:
     """Which telemetry fields does this question's text actually mention?
     Compound questions ("battery, tire pressure, and speed?") need more
     than the router's single get_telemetry target - live testing 2026-08-08
@@ -86,9 +85,9 @@ def answer_query(
     grammar: LlamaGrammar,
     cache: TelemetryCache,
     question: str,
-    chat_llm: Optional[Llama] = None,
-    tamil_chat_llm: Optional[Llama] = None,
-    history: Optional[History] = None,
+    chat_llm: Llama | None = None,
+    tamil_chat_llm: Llama | None = None,
+    history: History | None = None,
     language: str = DEFAULT_LANGUAGE,
 ) -> str:
     """V3's fully-local answer path: small talk -> grammar-constrained
@@ -171,14 +170,29 @@ def answer_query(
         # router still thinks this is telemetry AND some fuzzy
         # vehicle-term signal exists somewhere in the text - trust the
         # router's semantic understanding for cases the keyword scan
-        # alone can't resolve (e.g. "how fast am I going").
-        target = decision.get("target")
-        value = cache.get(target)
+        # alone can't resolve. NOTE: "how fast am I going" is NOT such a
+        # case, despite an earlier (wrong) claim in this project's history
+        # that it was - re-verified 2026-08-09 and it still fails
+        # _has_vehicle_term_signal() (no "fast" keyword; adding one caused
+        # real false positives, see VEHICLE_TERM_KEYWORDS in config.py),
+        # so it still falls through to unguarded chat below. Open gap, not
+        # fixed here - a real example of this branch's actual reach being
+        # narrower than once assumed.
+        # Named differently from the `target` above (not just style) -
+        # decision is a plain dict, so decision.get("target") is honestly
+        # Optional even though the GBNF grammar constrains get_telemetry
+        # decisions to always include one in practice.
+        router_target = decision.get("target")
+        if not router_target:
+            return TELEMETRY_UNAVAILABLE_RESPONSE.get(
+                language, TELEMETRY_UNAVAILABLE_RESPONSE[DEFAULT_LANGUAGE]
+            )
+        value = cache.get(router_target)
         if value is None:
             return TELEMETRY_UNAVAILABLE_RESPONSE.get(
                 language, TELEMETRY_UNAVAILABLE_RESPONSE[DEFAULT_LANGUAGE]
             )
-        return describe(target, value, language)
+        return describe(router_target, value, language)
 
     # Deterministic gate, checked before the free-form model ever runs -
     # see RESORT_KNOWLEDGE_TRIGGERS in config.py for why prompting alone

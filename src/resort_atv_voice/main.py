@@ -11,9 +11,14 @@ from .config import (
     STARTUP_GREETING,
     UNEXPECTED_ERROR_RESPONSE,
 )
-from .local_qa import answer_query
+from .local_qa import History, answer_query
 from .logging_config import configure_logging
-from .router import load_chat_model, load_grammar, load_router_model, load_tamil_chat_model
+from .router import (
+    load_chat_model,
+    load_grammar,
+    load_router_model,
+    load_tamil_chat_model,
+)
 
 NO_SPEECH_RESPONSE = "Sorry, I didn't catch that."
 
@@ -56,7 +61,7 @@ def run() -> None:
             # for one conversation, not carried across sleep.
             speech_timeout_ms = QUERY_SPEECH_TIMEOUT_MS
             heard_anything = False
-            history = []
+            history: History = []
             while True:
                 audio = stt.record_query(speech_timeout_ms=speech_timeout_ms)
                 language = DEFAULT_LANGUAGE
@@ -109,7 +114,11 @@ def run() -> None:
                             language,
                         )
                     except Exception:
-                        pass  # even the apology failed - just go back to sleep quietly
+                        # Even the apology failed - go back to sleep quietly rather
+                        # than propagate, but still record it. Logging itself is far
+                        # more robust than the TTS/audio call that just failed, so
+                        # this is a safe thing to trust even in a last-resort path.
+                        logger.exception("Also failed to speak the apology")
                     break
 
                 speech_timeout_ms = FOLLOWUP_SPEECH_TIMEOUT_MS

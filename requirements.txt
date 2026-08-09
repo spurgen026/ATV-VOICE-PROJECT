@@ -28,3 +28,12 @@ nvidia-cuda-runtime-cu12==12.9.79
 # V3 hardening round 2: real automated test suite in tests/, replacing the
 # throwaway/uncommitted scripts this project relied on before.
 pytest==9.1.1
+
+# Professional polish: linting + type checking (config in pyproject.toml).
+# mypy found and fixed several real gaps: two places where a Gemini API
+# response field the SDK types as Optional was used without a None check
+# (rag.py, index_documents.py - parked V2 code, but genuinely could crash
+# if ever revived), and a variable-name collision in local_qa.py that
+# would have raised NameError on a real, reachable code path.
+ruff==0.16.2
+mypy==2.3.0

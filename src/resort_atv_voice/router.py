@@ -1,6 +1,5 @@
 import json
 import logging
-from typing import List, Optional, Tuple
 
 from huggingface_hub import hf_hub_download
 from llama_cpp import Llama, LlamaGrammar
@@ -27,7 +26,7 @@ from .config import (
     TAMIL_UNICODE_RANGE,
 )
 
-History = List[Tuple[str, str]]
+History = list[tuple[str, str]]
 
 logger = logging.getLogger(__name__)
 
@@ -73,17 +72,24 @@ def route(llm: Llama, grammar: LlamaGrammar, query: str) -> dict:
         messages.append({"role": "assistant", "content": json.dumps(example_decision)})
     messages.append({"role": "user", "content": query})
 
+    # The ignores below suppress create_chat_completion()'s stub typing
+    # `messages`/the return value against llama-cpp-python's full
+    # streaming/non-streaming API surface (a Union keyed on the `stream`
+    # kwarg's value, which mypy can't narrow statically). We never pass
+    # stream=True here, so at runtime this is always the plain response
+    # dict with string content - confirmed by this whole project's
+    # extensive live testing, not just assumed.
     result = llm.create_chat_completion(
-        messages=messages,
+        messages=messages,  # type: ignore[arg-type]
         grammar=grammar,
         max_tokens=40,
         temperature=0.0,
     )
-    raw = result["choices"][0]["message"]["content"]
-    return json.loads(raw)
+    raw = result["choices"][0]["message"]["content"]  # type: ignore[index]
+    return json.loads(raw)  # type: ignore[arg-type]
 
 
-def _script_ratio(text: str, unicode_range: Tuple[int, int]) -> float:
+def _script_ratio(text: str, unicode_range: tuple[int, int]) -> float:
     """Fraction of `text`'s alphabetic characters that fall within
     `unicode_range`. Used to verify a reply actually came back in the
     requested script, instead of trusting the "Respond in {language_name}"
@@ -96,7 +102,7 @@ def _script_ratio(text: str, unicode_range: Tuple[int, int]) -> float:
 
 
 def generate_chat_reply(
-    llm: Llama, query: str, history: Optional[History] = None, language: str = DEFAULT_LANGUAGE
+    llm: Llama, query: str, history: History | None = None, language: str = DEFAULT_LANGUAGE
 ) -> str:
     """Free-form (no grammar) local reply for anything the router classifies
     as chat and small_talk.py doesn't already handle - the same Qwen model
@@ -120,8 +126,12 @@ def generate_chat_reply(
     attempts = CHAT_LANGUAGE_RETRY_ATTEMPTS if language == "ta" else 1
     text = ""
     for attempt in range(attempts):
-        result = llm.create_chat_completion(messages=messages, max_tokens=150, temperature=0.7)
-        text = result["choices"][0]["message"]["content"].strip()
+        # Same stream=True-vs-False typing gap as route() above.
+        result = llm.create_chat_completion(
+            messages=messages, max_tokens=150, temperature=0.7  # type: ignore[arg-type]
+        )
+        content = result["choices"][0]["message"]["content"]  # type: ignore[index]
+        text = (content or "").strip()  # type: ignore[union-attr]
         if language != "ta" or _script_ratio(text, TAMIL_UNICODE_RANGE) >= TAMIL_SCRIPT_MIN_RATIO:
             return text
         logger.warning("generate_chat_reply: attempt %d didn't come back in Tamil script, retrying", attempt + 1)

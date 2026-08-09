@@ -471,6 +471,22 @@ testing can begin. This is a Phase 2 blocker, not optional polish.
     measured, not fixed." STT itself held up well under the same test.
     Untried: threshold retuning, openWakeWord's own noise-augmented
     training, or a pre-filter VAD/noise gate.
+11. **New 2026-08-09: English speed paraphrases without the literal
+    "speed" word still fall through to unguarded chat.** "How fast am I
+    going" - the router correctly and consistently (3/3) classifies it
+    as `get_telemetry`/`speed_kmh`, but `_has_vehicle_term_signal()` has
+    no "fast" keyword, so the safety net blocks the correct decision.
+    Corrects an earlier (wrong) 2026-08-07 claim that this exact phrase
+    was already working. Tried adding "fast" to the keyword list -
+    caused real false positives ("fasting," "breakfast") via the
+    windowed fuzzy matcher, reverted as unsafe. See "Linting + type
+    checking" for how this was found. Same class of problem as the
+    Tamil வேகத்தில் gap (fixed) and the weather-question misroute
+    (mitigated) - the safety net's lexical-only approach has a
+    structural blind spot for paraphrases with no literal keyword at
+    all, not just missing individual words. Untried: a broader
+    fix would need something beyond keyword lists (e.g. a small
+    curated phrase list, or accepting this as a standing limitation).
 
 ### V3 environment setup (2026-08-07)
 
@@ -1747,6 +1763,88 @@ blocked on no git remote existing yet, a decision left to the user).
   handled this correctly, but worth checking directly rather than
   assuming the file handler would too - `encoding="utf-8"` set
   explicitly on it). 248 tests passing, 1 documented skip.
+
+## Linting + type checking: ruff and mypy (2026-08-09)
+
+Second professional-polish item. Config in `pyproject.toml`
+(`[tool.ruff]`, `[tool.mypy]`). Honest framing given up front, not just
+after the fact: these catch a *different class* of bug than what's
+actually caused real problems this session (the router misroutes, the
+safety-net regressions, the chat hallucinations were all behavioral bugs
+- static analysis doesn't see those, only the test suite and live
+testing do). Still worth doing - low cost, and it found real things.
+
+- **ruff**: 27 findings, 24 were Python-version modernization nags
+  (`typing.List`/`Tuple`/`Optional[X]` → builtin `list`/`tuple`/`X |
+  None`, safe now that the project targets 3.12) - auto-fixed. The
+  other 3 were real, if minor: a genuinely redundant `int()` call in
+  `can_telemetry.encode_frame()` (`round()` without `ndigits` already
+  returns `int`, confirmed by testing rather than assumed), and a
+  flagged `except Exception: pass` in `main.py`'s last-resort
+  error-apology path - upgraded to `logger.exception()` instead of
+  suppressing the lint warning, since real logging infrastructure now
+  exists and logging is far more robust than the TTS call that's
+  actually failing there.
+- **mypy**: 12 findings, all real gaps once triaged (none were noise) -
+  - 5 in `router.py` were `llama-cpp-python`'s stub typing
+    `create_chat_completion()`'s return value as a Union across its
+    full streaming/non-streaming API surface, which mypy can't narrow
+    since we select the branch via a runtime kwarg (`stream=`) we never
+    set to `True`. Suppressed narrowly with `# type: ignore[code]` on
+    the exact lines, each with a comment explaining why - not blanket
+    file-level or config-level suppression. One real improvement came
+    out of this anyway: `content.strip()` became `(content or
+    "").strip()`, since the stub's `Optional` on that field is honestly
+    possible even if rare in practice.
+  - 4 were in the parked V2 Gemini path (`rag.py`, `index_documents.py`)
+    - fields the `google-genai` SDK itself types as `Optional`
+      (`resp.embeddings`, `resp.text`, `e.values`) were used without a
+      None check. Genuinely could crash if that code were ever revived
+      (a safety-filter-blocked response, an empty embeddings list) -
+      fixed with explicit checks, folded into the existing
+      `GEMINI_ERRORS` fallback handling in `rag.py` (new
+      `_EmptyGeminiResponse` exception) so the recovery behavior matches
+      a real API failure; `index_documents.py` (a one-shot offline
+      script, not a live fallback path) raises loudly instead, on
+      purpose - different failure philosophy for a script vs. a live
+      answer path, not an inconsistency.
+  - 1 was a genuine bug caught mid-fix, not by mypy directly but by
+    *fixing what mypy flagged*: `local_qa.py` reused the name `target`
+    across two mutually-exclusive branches with different inferred
+    types, and mypy's complaint led to renaming the second occurrence to
+    `router_target` - the rename immediately exposed that the branch's
+    final `return describe(target, ...)` line still referenced the old
+    name, which would have raised `NameError` at runtime the first time
+    that branch actually executed (a real, reachable code path - the
+    router-trusts-semantic-understanding fallback). Caught before it
+    shipped, by re-testing after the edit rather than assuming a rename
+    was safe.
+  - 2 remaining were cosmetic (`index_documents.py`/`main.py` needing
+    explicit type annotations on empty list literals mypy couldn't infer
+    from) - fixed directly, no behavior change.
+- **A second real bug found while re-verifying the mypy fixes, unrelated
+  to typing**: testing the `router_target` branch end-to-end (the exact
+  code path just fixed) surfaced that `"how fast am I going"` - a phrase
+  a CLAUDE.md note from 2026-08-07 claimed was "already correctly
+  routed... live-tested" - actually falls through to unguarded chat.
+  Direct testing showed the router *does* correctly and consistently
+  (3/3) classify it as `get_telemetry`/`speed_kmh`, but
+  `_has_vehicle_term_signal()` has no "fast" keyword (only "speed"), so
+  the safety net blocks the correct decision. The earlier claim didn't
+  hold up and was wrong - corrected in the code comment rather than left
+  standing. **Attempted fix, found unsafe, reverted**: adding "fast" to
+  `VEHICLE_TERM_KEYWORDS` fuzzy-matched "fasting" and "breakfast" as
+  false positives via the windowed substring matcher (built earlier for
+  merged Tamil tokens) - a real regression risk (an unrelated question
+  answered as a telemetry one) worse than the gap it would have fixed.
+  Caught by testing before shipping it, reverted, left as an honestly
+  tracked open gap rather than shipped half-safe.
+- **Tooling added to `requirements.txt`**: `ruff==0.16.2`,
+  `mypy==2.3.0`. Verified end-to-end after all fixes: `ruff check src/`
+  and `mypy src/resort_atv_voice` both clean, full test suite still 248
+  passing/1 skipped, and a real (non-mocked) pipeline run through the
+  exact branch that had the `NameError` risk, confirming it actually
+  works now, not just that mypy stopped complaining.
 
 ## Unrelated sibling project — do not confuse
 
