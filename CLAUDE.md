@@ -1996,20 +1996,18 @@ great") all scored well below threshold.
   confirmed via `git diff` to predate this session's changes, not
   investigated further since that file isn't in the live path).
 
-### Known limitation, not yet resolved
+### Live-tested with a real human voice - confirmed working (2026-08-09)
 
-**Not yet live-tested with a real human voice** - every test so far
-used synthetic Piper TTS audio, same blind spot this project's own
-noise-robustness work already flagged for STT/wake-word testing more
-generally. 86.4% recall means it will sometimes miss a genuine spoken
-"Hey EV" (not zero-risk, same as the original `hey_jarvis_v0.1` at its
-own tuned threshold required live retuning from 0.5→0.3 after real
-missed detections). If live testing shows recall is too low in
-practice, the natural next step is scaling up the "quick experiment"
-config (more samples, more steps) toward the library's own suggested
-production range, now that the whole pipeline (env setup, data
-generation, training, export, integration) is proven working end to
-end on this machine - a re-run, not a re-investigation.
+User ran `main.py` and tested "Hey EV" by voice (not synthetic TTS,
+the gap flagged immediately after training). Result: **working,
+user-confirmed "worth the wait."** No retuning needed - unlike the
+original `hey_jarvis_v0.1` placeholder, which needed a live
+threshold drop (0.5→0.3) after real missed detections back in V1, the
+first-attempt "quick experiment" scale config (8,000 samples, 30,000
+steps) and its auto-calibrated threshold (0.25) held up on the first
+real try. Scaling up the training config toward the library's
+"production" range is not needed right now - only worth revisiting if
+real-world reliability issues show up later during heavier use.
 
 ## Unrelated sibling project — do not confuse
 
