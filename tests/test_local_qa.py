@@ -1,6 +1,7 @@
 import pytest
 
 from resort_atv_voice.can_telemetry import TelemetryCache
+from resort_atv_voice.config import CHAT_UNAVAILABLE_RESPONSE
 from resort_atv_voice.local_qa import (
     _detect_requested_fields,
     _fuzzy_contains,
@@ -108,102 +109,18 @@ class TestDetectRequestedFields:
         assert fields == ["battery_percent", "speed_kmh"]
 
 
-def test_resort_knowledge_trigger_catches_activity_questions():
-    from resort_atv_voice.config import RESORT_KNOWLEDGE_TRIGGERS
-
-    assert any(t in "what activities are there".lower() for t in RESORT_KNOWLEDGE_TRIGGERS)
-
-
-def test_resort_knowledge_trigger_does_not_catch_telemetry_questions():
-    from resort_atv_voice.config import RESORT_KNOWLEDGE_TRIGGERS
-
-    assert not any(t in "what is my battery percent".lower() for t in RESORT_KNOWLEDGE_TRIGGERS)
-
-
-class TestChatModelDispatch:
-    """Tamil chat gets a dedicated third model (see TAMIL_CHAT_MODEL_REPO
-    in config.py - Qwen's Tamil generation was genuinely weak even on
-    clean input). Fast test: mocks route() and generate_chat_reply()
-    directly so this verifies the dispatch wiring itself without needing
-    to load any real model - a regression here (e.g. the language == "ta"
-    check silently flipped or dropped) would be easy to miss otherwise."""
-
-    def test_tamil_language_dispatches_to_tamil_chat_llm(self, monkeypatch):
-        import resort_atv_voice.local_qa as local_qa_module
-
-        monkeypatch.setattr(local_qa_module, "route", lambda llm, grammar, q: {"action": "chat"})
-        captured = {}
-        monkeypatch.setattr(
-            local_qa_module,
-            "generate_chat_reply",
-            lambda llm, query, history, language: captured.setdefault("llm", llm) or "reply",
-        )
-
-        chat_llm, tamil_chat_llm = object(), object()
-        answer_query(
-            router_llm=object(),
-            grammar=object(),
-            cache=TelemetryCache(),
-            question="ஏதோ ஒரு கேள்வி",
-            chat_llm=chat_llm,
-            tamil_chat_llm=tamil_chat_llm,
-            language="ta",
-        )
-        assert captured["llm"] is tamil_chat_llm
-
-    def test_english_language_dispatches_to_chat_llm_not_tamil(self, monkeypatch):
-        import resort_atv_voice.local_qa as local_qa_module
-
-        monkeypatch.setattr(local_qa_module, "route", lambda llm, grammar, q: {"action": "chat"})
-        captured = {}
-        monkeypatch.setattr(
-            local_qa_module,
-            "generate_chat_reply",
-            lambda llm, query, history, language: captured.setdefault("llm", llm) or "reply",
-        )
-
-        chat_llm, tamil_chat_llm = object(), object()
-        answer_query(
-            router_llm=object(),
-            grammar=object(),
-            cache=TelemetryCache(),
-            question="some random question",
-            chat_llm=chat_llm,
-            tamil_chat_llm=tamil_chat_llm,
-            language="en",
-        )
-        assert captured["llm"] is chat_llm
-
-    def test_tamil_chat_llm_falls_back_to_chat_llm_when_not_provided(self, monkeypatch):
-        # Same fallback pattern as chat_llm -> router_llm - callers that
-        # only load two models (e.g. quick scripts) shouldn't break.
-        import resort_atv_voice.local_qa as local_qa_module
-
-        monkeypatch.setattr(local_qa_module, "route", lambda llm, grammar, q: {"action": "chat"})
-        captured = {}
-        monkeypatch.setattr(
-            local_qa_module,
-            "generate_chat_reply",
-            lambda llm, query, history, language: captured.setdefault("llm", llm) or "reply",
-        )
-
-        chat_llm = object()
-        answer_query(
-            router_llm=object(),
-            grammar=object(),
-            cache=TelemetryCache(),
-            question="ஏதோ ஒரு கேள்வி",
-            chat_llm=chat_llm,
-            language="ta",
-        )
-        assert captured["llm"] is chat_llm
-
-
 @pytest.mark.slow
 class TestAnswerQueryEndToEnd:
     """Real integration tests through the full answer_query() path - small
-    talk -> router -> vehicle-term safety net -> CAN cache / chat
-    generation. Slow: loads the router and chat LLMs."""
+    talk -> keyword match -> router+safety-net -> fixed honest fallback.
+    Slow: loads the router LLM.
+
+    Free-form chat generation was retired from this path 2026-08-09,
+    after repeated fabrication/wrong-language failures (see
+    CHAT_UNAVAILABLE_RESPONSE in config.py for the full list). Every
+    test below that used to check a *generated* reply's content now
+    checks it returns the fixed CHAT_UNAVAILABLE_RESPONSE instead -
+    a stronger guarantee than before, not just a different one."""
 
     @pytest.fixture
     def cache(self):
@@ -214,50 +131,31 @@ class TestAnswerQueryEndToEnd:
         c.update("tire_pressure_psi", 32)
         return c
 
-    def test_telemetry_question_answers_from_cache_not_the_model(
-        self, router_llm, router_grammar, chat_llm, cache
-    ):
-        response = answer_query(
-            router_llm, router_grammar, cache, "What's the battery percentage?", chat_llm=chat_llm
-        )
+    def test_telemetry_question_answers_from_cache(self, router_llm, router_grammar, cache):
+        response = answer_query(router_llm, router_grammar, cache, "What's the battery percentage?")
         assert "78" in response
 
-    def test_weather_question_never_states_a_fake_vehicle_reading(
-        self, router_llm, router_grammar, chat_llm, cache
+    def test_weather_question_gets_the_fixed_honest_response_not_a_fake_reading(
+        self, router_llm, router_grammar, cache
     ):
-        # The exact case the safety net exists for - regardless of what
-        # the chat model's answer actually says, it must never claim a
-        # specific telemetry number for an unrelated question.
-        response = answer_query(
-            router_llm,
-            router_grammar,
-            cache,
-            "வெளியா வதர் எப்படி இருக்கு?",
-            chat_llm=chat_llm,
-            language="ta",
-        )
-        assert "பூஜ்யம்" not in response  # the (fabricated) speed reading this used to produce
+        # The exact case the safety net exists for - this used to check
+        # the generated reply didn't happen to mention the fabricated
+        # speed reading; now that chat generation is retired entirely,
+        # this can assert the stronger guarantee that it's always the
+        # fixed response, not just "doesn't happen to look wrong."
+        response = answer_query(router_llm, router_grammar, cache, "வெளியா வதர் எப்படி இருக்கு?", language="ta")
+        assert response == CHAT_UNAVAILABLE_RESPONSE["ta"]
 
-    def test_thanks_is_answered_by_small_talk_not_the_router(
-        self, router_llm, router_grammar, chat_llm, cache
-    ):
-        response = answer_query(
-            router_llm, router_grammar, cache, "thank you", chat_llm=chat_llm
-        )
+    def test_thanks_is_answered_by_small_talk_not_the_router(self, router_llm, router_grammar, cache):
+        response = answer_query(router_llm, router_grammar, cache, "thank you")
         assert response == "You're welcome!"
 
-    def test_missing_cache_value_gives_the_unavailable_response_not_a_crash(
-        self, router_llm, router_grammar, chat_llm
-    ):
+    def test_missing_cache_value_gives_the_unavailable_response_not_a_crash(self, router_llm, router_grammar):
         empty_cache = TelemetryCache()
-        response = answer_query(
-            router_llm, router_grammar, empty_cache, "What's the battery percentage?", chat_llm=chat_llm
-        )
+        response = answer_query(router_llm, router_grammar, empty_cache, "What's the battery percentage?")
         assert "don't have" in response.lower()
 
-    def test_compound_question_answers_every_field_not_just_the_first(
-        self, router_llm, router_grammar, chat_llm, cache
-    ):
+    def test_compound_question_answers_every_field_not_just_the_first(self, router_llm, router_grammar, cache):
         # The exact live-captured question that used to answer only
         # "The battery is at 78 percent," silently dropping tire
         # pressure and speed.
@@ -266,11 +164,17 @@ class TestAnswerQueryEndToEnd:
             router_grammar,
             cache,
             "Can you tell me about the battery, the tire pressure and the speed I am going on?",
-            chat_llm=chat_llm,
         )
         assert "78" in response
         assert "32" in response
         assert "0" in response
+
+    def test_genuinely_off_topic_question_gets_the_fixed_honest_response(self, router_llm, router_grammar, cache):
+        # Anything that isn't a small-talk or telemetry match - a real
+        # open-ended question, not a misroute case - also gets the fixed
+        # response now instead of a generated one.
+        response = answer_query(router_llm, router_grammar, cache, "What activities does the resort have?")
+        assert response == CHAT_UNAVAILABLE_RESPONSE["en"]
 
     @pytest.mark.parametrize(
         "question,expected_substring",
@@ -282,23 +186,15 @@ class TestAnswerQueryEndToEnd:
         ids=["ta battery misroute (was speed/motor)", "ta tire misroute (was battery)", "ta speed (was hallucinated)"],
     )
     def test_keyword_match_overrides_a_flaky_router_pick(
-        self, router_llm, router_grammar, chat_llm, tamil_chat_llm, cache, question, expected_substring
+        self, router_llm, router_grammar, cache, question, expected_substring
     ):
         # Live-captured 2026-08-08: the router itself picked the wrong
         # field for the first two, and the vehicle-term safety net
         # blocked a *correct* router decision for the third (native
         # Tamil "வேகத்தில" wasn't in the keyword list, only the loanword
-        # "ஸ்பீட்" was) - letting it fall through to chat, which invented
-        # a fake speed reading. All three are now answered directly from
-        # a literal keyword match, bypassing the router's field pick
-        # entirely rather than trusting it.
-        response = answer_query(
-            router_llm,
-            router_grammar,
-            cache,
-            question,
-            chat_llm=chat_llm,
-            tamil_chat_llm=tamil_chat_llm,
-            language="ta",
-        )
+        # "ஸ்பீட்" was) - letting it fall through to (at the time) chat,
+        # which invented a fake speed reading. All three are now
+        # answered directly from a literal keyword match, bypassing the
+        # router's field pick entirely rather than trusting it.
+        response = answer_query(router_llm, router_grammar, cache, question, language="ta")
         assert expected_substring in response

@@ -10,6 +10,7 @@ from .config import (
     CHAT_MODEL_FILENAME,
     CHAT_MODEL_REPO,
     DEFAULT_LANGUAGE,
+    HINDI_UNICODE_RANGE,
     LANGUAGE_NAMES,
     LOCAL_CHAT_SYSTEM_PROMPT,
     MAX_HISTORY_TURNS,
@@ -19,10 +20,10 @@ from .config import (
     ROUTER_FEWSHOT_EXAMPLES,
     ROUTER_GRAMMAR_PATH,
     ROUTER_SYSTEM_PROMPT,
+    SCRIPT_MIN_RATIO,
     TAMIL_CHAT_MODEL_CONTEXT_SIZE,
     TAMIL_CHAT_MODEL_FILENAME,
     TAMIL_CHAT_MODEL_REPO,
-    TAMIL_SCRIPT_MIN_RATIO,
     TAMIL_UNICODE_RANGE,
 )
 
@@ -101,20 +102,48 @@ def _script_ratio(text: str, unicode_range: tuple[int, int]) -> float:
     return in_range / len(letters)
 
 
+def _response_matches_language(text: str, language: str) -> bool:
+    """True if `text` actually came back in the script `language` implies.
+    Tamil/Hindi: most of the text should be in that script. English: most
+    of the text should NOT be Tamil or Hindi script - found live
+    2026-08-09 that an English question, asked after several Tamil turns
+    in the same conversation, got answered in Tamil script despite
+    language='en' being correctly detected - multi-turn history in a
+    different language biases generation regardless of the target
+    language, a problem that turned out symmetric across en/hi/ta, not
+    Tamil-specific (see CHAT_LANGUAGE_RETRY_ATTEMPTS in config.py)."""
+    if language == "ta":
+        return _script_ratio(text, TAMIL_UNICODE_RANGE) >= SCRIPT_MIN_RATIO
+    if language == "hi":
+        return _script_ratio(text, HINDI_UNICODE_RANGE) >= SCRIPT_MIN_RATIO
+    return (
+        _script_ratio(text, TAMIL_UNICODE_RANGE) < SCRIPT_MIN_RATIO
+        and _script_ratio(text, HINDI_UNICODE_RANGE) < SCRIPT_MIN_RATIO
+    )
+
+
 def generate_chat_reply(
     llm: Llama, query: str, history: History | None = None, language: str = DEFAULT_LANGUAGE
 ) -> str:
-    """Free-form (no grammar) local reply for anything the router classifies
-    as chat and small_talk.py doesn't already handle - the same Qwen model
-    the router uses, so this needs no cloud call. Not grounded in any
-    document corpus (that's V2's parked Gemini/RAG path, not this).
+    """Free-form (no grammar) local reply. Not grounded in any document
+    corpus (that's V2's parked Gemini/RAG path, not this). As of
+    2026-08-09 this is parked, not called from the live app - see
+    local_qa.answer_query(), which now returns a fixed honest "no
+    information" response instead of generating anything for the cases
+    that used to reach this function, after repeated fabrication/wrong-
+    language failures. Kept (not deleted) in case a safer approach to
+    free-form chat is revisited later, same "parked, not deleted"
+    philosophy as the V2 Gemini/RAG code.
 
-    For Tamil, retries if the reply doesn't actually come back in Tamil
-    script - confirmed live 2026-08-08 that the "Respond in {language_name}"
-    instruction alone is unreliable (2 of 3 identical attempts answered in
-    English), the same unreliable-instruction-following pattern already
-    seen elsewhere in this codebase. See CHAT_LANGUAGE_RETRY_ATTEMPTS in
-    config.py."""
+    Retries if the reply doesn't actually come back in the requested
+    language's script - confirmed live 2026-08-08 for Tamil (asked the
+    same question 3 times, got English back twice) and, after that fix
+    was scoped Tamil-only, confirmed live 2026-08-09 that the same
+    problem happens in the other direction too (an English question,
+    asked after several Tamil turns in the same conversation, answered
+    in Tamil) - multi-turn history in a different language biases
+    generation regardless of the target language, symmetric across
+    en/hi/ta. See CHAT_LANGUAGE_RETRY_ATTEMPTS in config.py."""
     language_name = LANGUAGE_NAMES.get(language, LANGUAGE_NAMES[DEFAULT_LANGUAGE])
     system_prompt = LOCAL_CHAT_SYSTEM_PROMPT.format(language_name=language_name)
     messages = [{"role": "system", "content": system_prompt}]
@@ -123,16 +152,18 @@ def generate_chat_reply(
         messages.append({"role": "assistant", "content": a})
     messages.append({"role": "user", "content": query})
 
-    attempts = CHAT_LANGUAGE_RETRY_ATTEMPTS if language == "ta" else 1
     text = ""
-    for attempt in range(attempts):
+    for attempt in range(CHAT_LANGUAGE_RETRY_ATTEMPTS):
         # Same stream=True-vs-False typing gap as route() above.
         result = llm.create_chat_completion(
             messages=messages, max_tokens=150, temperature=0.7  # type: ignore[arg-type]
         )
         content = result["choices"][0]["message"]["content"]  # type: ignore[index]
         text = (content or "").strip()  # type: ignore[union-attr]
-        if language != "ta" or _script_ratio(text, TAMIL_UNICODE_RANGE) >= TAMIL_SCRIPT_MIN_RATIO:
+        if _response_matches_language(text, language):
             return text
-        logger.warning("generate_chat_reply: attempt %d didn't come back in Tamil script, retrying", attempt + 1)
+        logger.warning(
+            "generate_chat_reply: attempt %d didn't come back in the expected language, retrying",
+            attempt + 1,
+        )
     return text

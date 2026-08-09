@@ -284,23 +284,30 @@ Respond in {language_name}, matching the language the rider spoke in."""
 LANGUAGE_NAMES = {"en": "English", "hi": "Hindi", "ta": "Tamil"}
 DEFAULT_LANGUAGE = "en"
 
-# Deterministic retry for Tamil chat replies (2026-08-08): the "Respond
-# in {language_name}" instruction above is exactly the kind of prompt-only
-# instruction this codebase has repeatedly found unreliable - confirmed
-# directly for Tamil, not assumed: asked the same Tamil question 3 times
-# through generate_chat_reply(), got English back twice and Tamil once.
-# Answering in English when a rider spoke Tamil is arguably worse than a
-# mediocre Tamil answer, since they may not read English at all. Same
+# Deterministic retry for chat replies, ALL THREE languages (generalized
+# 2026-08-09, originally Tamil-only as of 2026-08-08). The "Respond in
+# {language_name}" instruction above is exactly the kind of prompt-only
+# instruction this codebase has repeatedly found unreliable. First
+# confirmed for Tamil (asked the same Tamil question 3 times, got English
+# back twice) and fixed there only, reasoning "no evidence of the same
+# problem for Hindi" - that scoping turned out wrong, not just
+# incomplete: live testing 2026-08-09 found an ENGLISH question, asked
+# after several Tamil turns in the same conversation, answered in Tamil
+# script despite an explicit "respond in English" instruction and
+# language='en' being correctly detected. Reproduced directly: the same
+# English question with Tamil-language history in the prompt answers in
+# Tamil; without that history, it answers in English. The real mechanism
+# isn't "Tamil is unreliable" - it's that multi-turn history in a
+# different language biases generation regardless of the target
+# language, which is symmetric across en/hi/ta, not Tamil-specific. Same
 # "don't trust the LLM's self-restraint, gate deterministically" fix
 # philosophy as everywhere else - generate_chat_reply() checks the actual
-# Unicode script of the output and retries (temperature=0.7 makes each
-# attempt genuinely different, not a repeat of the same failure) rather
-# than trusting the instruction on the first try. Only applied for Tamil -
-# no evidence of the same problem for Hindi in live testing, so scoped to
-# where the actual failure was confirmed rather than applied everywhere
-# "just in case."
+# Unicode script of the output against the requested language and
+# retries (temperature=0.7 makes each attempt genuinely different, not a
+# repeat of the same failure) for all three languages now, not just Tamil.
 TAMIL_UNICODE_RANGE = (0x0B80, 0x0BFF)
-TAMIL_SCRIPT_MIN_RATIO = 0.5
+HINDI_UNICODE_RANGE = (0x0900, 0x097F)
+SCRIPT_MIN_RATIO = 0.5
 CHAT_LANGUAGE_RETRY_ATTEMPTS = 3
 
 # Phrases for the get_telemetry branch, per language - the router only ever
@@ -367,11 +374,10 @@ UNEXPECTED_ERROR_RESPONSE = {
 # the router's remaining known-dangerous failure - a Tamil non-telemetry
 # question ('வெளியா வதர் எப்படி இருக்கு?', reads as "how's the weather
 # outside") still misrouted to speed_kmh even as a verbatim few-shot
-# example (see CLAUDE.md "V3 hardening, round 2"). Same fix philosophy as
-# RESORT_KNOWLEDGE_TRIGGERS: don't trust the LLM's classification alone,
-# gate deterministically. This one only ever downgrades get_telemetry ->
-# chat, never picks a field itself and never upgrades chat -> telemetry -
-# it's a safety net, not a second router.
+# example (see CLAUDE.md "V3 hardening, round 2"). Don't trust the LLM's
+# classification alone, gate deterministically. This one only ever
+# downgrades get_telemetry -> chat, never picks a field itself and never
+# upgrades chat -> telemetry - it's a safety net, not a second router.
 #
 # Threshold tuned empirically against real transcripts (difflib.
 # SequenceMatcher.ratio(), character-level): the weakest genuine
@@ -429,33 +435,35 @@ TELEMETRY_FIELD_KEYWORDS = {
 VEHICLE_TERM_KEYWORDS = tuple(kw for keywords in TELEMETRY_FIELD_KEYWORDS.values() for kw in keywords)
 VEHICLE_TERM_FUZZY_THRESHOLD = 0.8
 
-# V3 hardening: LOCAL_CHAT_SYSTEM_PROMPT already told the model not to
-# invent resort amenities, and Phase 6 testing showed it did so anyway
-# ("a scenic boat ride around the lake") - the same unreliable-uncertainty
-# pattern documented for the router in Phase 2+3, where prompt wording
-# alone didn't unlock honest "I don't know" behavior at this model size.
-# Same fix as the router's grammar constraint: don't trust the LLM's
-# self-restraint, gate deterministically before generation is ever called.
-# English-only keyword match and not an exhaustive phrase list, so some
-# resort-knowledge questions will still slip through to free generation -
-# same known-limitation shape as small_talk.py's language coverage.
-RESORT_KNOWLEDGE_TRIGGERS = (
-    "activity", "activities", "recommend", "sightsee", "restaurant",
-    "dining", "dinner", "lunch", "breakfast", "menu", "book a table",
-    "reservation", "hotel", "amenity", "amenities", "pool", "spa",
-    "trail", "hike", "hiking", "boat ride", "lake", "waterfall",
-    "things to do", "what should i do", "where can i",
-)
-
-# Rewritten colloquial 2026-08-08, same caveat as TELEMETRY_FIELD_PHRASES
-# above - not native-verified. Kept the respectful आप/உங்கள் address form
-# used elsewhere in this app (a resort guest, not a close friend) -
-# colloquial vocabulary/structure, not informal-address - rather than
-# switching to तुम/உன் which would read as presumptuous for a guest.
-RESORT_KNOWLEDGE_UNAVAILABLE_RESPONSE = {
-    "en": "I don't have real information about resort activities or amenities yet - I can only help with your vehicle for now.",
-    "hi": "रिसॉर्ट की एक्टिविटीज़ या सुविधाओं के बारे में मुझे अभी सही जानकारी नहीं है - फिलहाल मैं बस आपकी गाड़ी के बारे में मदद कर सकता हूं।",
-    "ta": "ரிசார்ட் ஆக்டிவிட்டீஸ் பத்தி இன்னும் சரியா எனக்குத் தெரியல - தற்போதைக்கு உங்க வண்டி பத்தி மட்டும்தான் உதவ முடியும்.",
+# Free-form chat generation retired from the live app 2026-08-09, after
+# repeated fabrication/wrong-language failures that kept recurring no
+# matter how many individual cases got patched: fabricated resort
+# amenities (Phase 6), a fabricated speed reading (V3 hardening round 2),
+# a fabricated battery percentage plus an unrelated movie reference (V3
+# hardening round 2), a fabricated driving-safety tangent instead of a
+# battery reading, and an English question answered in Tamil due to
+# history-language-bleed (both 2026-08-09 live testing). Same "don't
+# trust the LLM's self-restraint, gate deterministically" philosophy
+# already used everywhere else in this app, just applied to its logical
+# conclusion: anything that isn't a clear small-talk or telemetry match
+# now gets this fixed, honest response instead of a generated one.
+# router.generate_chat_reply()/load_chat_model()/load_tamil_chat_model()
+# are kept, not deleted, in case a safer approach to free-form chat is
+# revisited later (grounding via local RAG once real resort documents
+# exist is the most likely candidate, per the "local RAG revival"
+# discussion this session - not attempted, no content to ground it in
+# yet). Was RESORT_KNOWLEDGE_UNAVAILABLE_RESPONSE, gated by
+# RESORT_KNOWLEDGE_TRIGGERS (a keyword list for resort-activity
+# questions specifically) - broadened to a universal fallback since the
+# trigger distinction no longer matters when every non-telemetry,
+# non-small-talk question gets the same honest answer either way.
+# Text unchanged, still not native-verified (same caveat as
+# TELEMETRY_FIELD_PHRASES), still keeps the respectful आप/உங்கள் address
+# form (a resort guest, not a close friend).
+CHAT_UNAVAILABLE_RESPONSE = {
+    "en": "I don't have real information about that yet - I can only help with your vehicle for now.",
+    "hi": "उस बारे में मुझे अभी सही जानकारी नहीं है - फिलहाल मैं बस आपकी गाड़ी के बारे में मदद कर सकता हूं।",
+    "ta": "அது பத்தி இன்னும் சரியா எனக்குத் தெரியல - தற்போதைக்கு உங்க வண்டி பத்தி மட்டும்தான் உதவ முடியும்.",
 }
 
 # V3 Phase 5: Tamil/Hindi TTS. Piper's official voice catalog has zero

@@ -1846,6 +1846,98 @@ testing do). Still worth doing - low cost, and it found real things.
   exact branch that had the `NameError` risk, confirming it actually
   works now, not just that mypy stopped complaining.
 
+## Free-form chat generation retired from the live path (2026-08-09)
+
+User ran the app live and hit two severe, back-to-back bugs on the same
+run: a battery question answered with a fabricated ~20-second
+driving-safety tangent instead of a reading, and two plain English
+questions answered in Tamil script. Reaction, verbatim: "dude why the
+fuck is it making things up and saying english rewuests in tamil?"
+Root-caused immediately after (see "V3 hardening, round 2 continued"
+and the Tamil-Llama-7B section above for the diagnosis of the
+wrong-language bug specifically - multi-turn history in one language
+biases generation regardless of the current question's language or an
+explicit system-prompt instruction, confirmed by direct reproduction:
+same English question, with vs. without prior Tamil turns in history,
+gave English vs. Tamil).
+
+Rather than accept another patch cycle, the user gave a direct
+architectural instruction: **"can you turn off that model that handles
+irrelevent questions and make the model just say no information about
+it so that we can avoid it and be on track?"** - stop trying to make
+free-form generation safe, remove it from the live path entirely.
+
+This is the same "don't trust the LLM's self-restraint, gate
+deterministically" philosophy this project had already applied
+piecemeal several times (the router's grammar constraint from the
+start; `RESORT_KNOWLEDGE_TRIGGERS` gating fabricated amenities; the
+vehicle-term safety net gating misroutes) - taken to its logical
+conclusion for the one path that had never gotten a deterministic gate:
+free-form chat had no gate at all, just prompt wording, and prompt
+wording had failed at every single thing it was asked to guarantee
+across this project's history (the router's "don't guess," Phase 2+3;
+"don't invent amenities," V3 hardening round 2; "respond in Tamil,"
+Tamil-Llama-7B section) - the two bugs that triggered this were just
+the last, worst examples of a pattern already fully demonstrated.
+
+- **`local_qa.answer_query()`** no longer accepts `chat_llm`,
+  `tamil_chat_llm`, or `history` parameters, and no longer imports or
+  calls `generate_chat_reply()`. Its only paths now are: small talk
+  (deterministic keyword match) → literal telemetry keyword match
+  (deterministic, checked before the router) → router decision +
+  vehicle-term safety net (deterministic gate on an LLM classification,
+  but the classification only ever *picks a field*, never generates
+  text) → a fixed honest fallback. No branch in this function can
+  generate freeform text anymore.
+- **`config.RESORT_KNOWLEDGE_UNAVAILABLE_RESPONSE` renamed to
+  `CHAT_UNAVAILABLE_RESPONSE`** and broadened in scope/docstring - it's
+  now the answer for *anything* that isn't small talk or a telemetry
+  match, not just resort-knowledge questions specifically.
+  `RESORT_KNOWLEDGE_TRIGGERS` was deleted outright (not parked) - it
+  existed only to distinguish "resort-knowledge question" from other
+  off-topic questions so each could get a different fixed response, and
+  that distinction stopped mattering once every non-match gets the same
+  response either way.
+- **`main.py`** no longer loads `chat_llm`/`tamil_chat_llm`
+  (`load_chat_model()`/`load_tamil_chat_model()` calls removed) and no
+  longer tracks per-conversation `history` - one less model resident in
+  memory, one less thing that can go wrong per turn.
+- **Parked, not deleted**: `router.py` still has
+  `generate_chat_reply()`, `load_chat_model()`, `load_tamil_chat_model()`,
+  `_response_matches_language()` (generalized this same session from
+  Tamil-only to all three languages, symmetric history-bleed fix, right
+  before the pivot decision arrived) - same "parked, not deleted"
+  convention as the V2 Gemini/RAG code, in case a safer approach to
+  free-form generation gets revisited later (e.g. retrieval-grounded
+  generation once real resort documents exist, echoing the still-open
+  "revive Gemini RAG locally" item).
+- **Consequence, not yet re-solved**: "how fast am I going" (no literal
+  "speed" keyword, and `_has_vehicle_term_signal()` has no "fast"
+  keyword either per the just-reverted unsafe fix above) now gets
+  `CHAT_UNAVAILABLE_RESPONSE` instead of either a correct answer or a
+  hallucination - arguably the correct failure direction (honest "I
+  don't know" beats a wrong or fabricated answer), but it's still a
+  real gap in what the assistant can answer, not resolved by this
+  change, just made safer to leave open.
+- **Verified**: `tests/test_local_qa.py` rewritten - removed
+  `TestChatModelDispatch` (tested the now-deleted
+  `chat_llm`/`tamil_chat_llm` selection logic) and the
+  `RESORT_KNOWLEDGE_TRIGGERS` tests; every `TestAnswerQueryEndToEnd`
+  method dropped the `chat_llm`/`tamil_chat_llm` args it used to pass;
+  the weather-misroute test now asserts the *stronger* guarantee that
+  the response exactly equals `CHAT_UNAVAILABLE_RESPONSE["ta"]`, not
+  just "doesn't happen to contain a bad number." `tests/test_router.py`
+  gained a test for the generalized (all-language) retry loop on
+  `generate_chat_reply()`, still exercised directly as parked
+  functionality. `tests/test_config_consistency.py` updated for the
+  rename/removal. `ruff check src/ tests/` and
+  `mypy src/resort_atv_voice` both clean; full suite (`pytest
+  --run-slow`) **244 passing, 1 documented skip** - re-ran through the
+  real `answer_query()` path, not just unit-level, including the two
+  exact bug categories reported live (an off-topic/weather-style
+  question now returns the fixed response verbatim; telemetry and small
+  talk unaffected).
+
 ## Unrelated sibling project — do not confuse
 
 There's a separate, unrelated EV ATV voice assistant project at
