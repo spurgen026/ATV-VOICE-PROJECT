@@ -411,19 +411,48 @@ UNEXPECTED_ERROR_RESPONSE = {
 # battery/tire have no distinct common native-Tamil word to add (பேட்டரி/
 # டயர் are themselves the standard spoken terms, not just loanword
 # alternatives to some other native word).
+#
+# 2026-08-10: expanded further with colloquial alternatives a rider might
+# plausibly say instead of the more literal/formal terms above - "charge"
+# instead of "battery," "air" instead of "pressure," "hot"/गरम instead of
+# "temperature"/तापमान (गरम is not a guess - it's the exact wording
+# already used in one of ROUTER_FEWSHOT_EXAMPLES: "मोटर कितनी गरम है," which
+# the keyword list itself never actually covered until now). Every addition
+# was tested against plausible unrelated words via _fuzzy_contains() before
+# being kept, same discipline as the earlier "fast" keyword incident (see
+# comment on speed_kmh below) - several candidates were dropped after
+# testing found real collisions:
+#   - bare English "charge"/"hot"/"air" all fuzzy-matched common unrelated
+#     words ("change," "shot"/"hoot," "hair"/"fair"/"pair"/"chair"/"stair")
+#     at the 0.8 threshold - the exact "fast"/"fasting" problem again, so
+#     none of the three were added.
+#   - Tamil காத்து (air, spoken variant) matched காது ("ear") and,
+#     worse, காத்திரு ("wait" - a genuinely common word) - dropped in
+#     favor of just காற்று (the written/formal form), which only had one
+#     minor collision (கூற்று, "statement/saying," a comparatively rare
+#     word).
+#   - Hindi हवा (air) matched हवाला ("reference") - dropped entirely for
+#     now; no safe air/pressure alternative was found for Hindi.
+# Same caveat as this project's other hand-written Tamil/Hindi text
+# throughout (colloquial phrasing, number_words.py, small_talk.py): not
+# verified by a native speaker, just plausible common usage tested for
+# false-positive safety, not correctness.
 TELEMETRY_FIELD_KEYWORDS = {
     "battery_percent": (
         "battery", "बैटरी", "பேட்டரி", "பாட்டரி", "பாட்டிரி", "बाट्री", "बाटरी",
         "percent", "पर्सेंट", "சதவீதம்",
+        "சார்ஜ்", "चार्ज",
     ),
     "tire_pressure_psi": (
         "tire", "tyre", "टायर", "டயர்", "தயர்", "ஐயர்",
         "pressure", "प्रेशर", "प्रशर", "பிரஷர்", "பிரசர்", "ப்ரச்சர்",
         "அழுத்தம்",
+        "காற்று",
     ),
     "motor_temp_c": (
         "motor", "मोटर", "மோட்டர்", "மோட்டார்",
         "temperature", "टेम्परेचर", "तापमान", "டெம்பரேச்சர்", "வெப்பநிலை",
+        "गरम", "गर्म", "சூடு", "சூடா",
     ),
     "speed_kmh": (
         # "fast" deliberately NOT added, 2026-08-09: tried it (see

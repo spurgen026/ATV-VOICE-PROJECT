@@ -26,6 +26,14 @@ TRUE_CASES = [
     ("நான் எவளோ ச்பீட்டில போயிட்டிருக்கேன்.", "live speed question, correctly routed"),
     ("what speed i am going in", "en speed"),
     ("பாட்டிரியவளவு இருக்கு", "live: STT merged 'battery'+'how much' with no space"),
+    # 2026-08-10: colloquial vocabulary added to TELEMETRY_FIELD_KEYWORDS -
+    # charge/air/hot alternatives to the more literal battery/pressure/
+    # temperature terms, each verified false-positive-safe before adding.
+    ("சார்ஜ் எவ்வளவு இருக்கு", "ta battery via 'charge' colloquialism"),
+    ("चार्ज कितना है", "hi battery via 'charge' colloquialism"),
+    ("டயர்ல காற்று எவ்வளவு இருக்கு", "ta tire via 'air' instead of 'pressure'"),
+    ("மோட்டர் சூடா இருக்கா", "ta motor via 'hot' colloquialism"),
+    ("मोटर गर्म है क्या", "hi motor via alternate 'गर्म' spelling"),
 ]
 
 FALSE_CASES = [
@@ -35,6 +43,12 @@ FALSE_CASES = [
     ("boundary.", "live STT mis-transcription of battery"),
     ("Siri, bye.", "en farewell"),
     ("Bye.", "en farewell"),
+    # 2026-08-10: locks in the false-positive fix found while adding the
+    # 'air' colloquialism above - காத்து (spoken "air") was dropped from
+    # TELEMETRY_FIELD_KEYWORDS specifically because it fuzzy-matched
+    # காத்திரு ("wait," a genuinely common word) - this confirms the fix
+    # holds, not just that the risky keyword was removed.
+    ("இன்னும் கொஞ்சம் காத்திருங்க", "ta 'please wait a bit' - must not match dropped 'air' keyword"),
 ]
 
 

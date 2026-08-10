@@ -11,3 +11,4 @@ index/
 logs/
 wakeword_training/data/
 wakeword_training/output/
+wakeword_training/models_scratch/
