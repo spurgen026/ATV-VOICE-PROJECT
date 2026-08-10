@@ -2075,6 +2075,115 @@ head-to-head rather than picking one on intuition.
   pre-existing, unrelated `index_documents.py` finding noted elsewhere
   in this file.
 
+## Router GPU offload attempted again, found a real correctness bug, reverted (2026-08-10)
+
+User asked for other ways to speed things up (after a separate Tamil TTS
+voice evaluation - see below - was rejected on latency grounds). The
+earlier full GPU-offload attempt (see "GPU offload for the LLMs")
+touched all 3 llama.cpp models and was reverted because the bigger chat
+models didn't fit in this laptop's 4GB VRAM alongside Whisper. This time
+scoped to *only* the small router model (1.5B, ~1.35GB VRAM), which
+measured as fitting comfortably alongside Whisper (2.4GB/4GB combined,
+1.7GB headroom) - the exact problem that killed the earlier attempt.
+
+**A real, reproducible correctness bug was found before this shipped,
+not after.** `tests/test_router.py::test_routing_decision[ta battery]`
+started failing consistently (3/3) when run as part of the full test
+file, but passed reliably in isolation - not the already-documented
+"occasional flip on a close call" non-determinism (see "V3 hardening,
+round 2 continued"), since that would be intermittent, not a hard 3/3
+fail every time. Isolated the cause directly: ran the same sequence of
+7 queries through a fresh CPU-loaded model and a fresh GPU-loaded model
+side by side. **Both handled the first 6 identically. On the 7th (the
+same Tamil battery case), CPU got it right every time; GPU consistently
+returned the wrong field (`tire_pressure_psi` instead of
+`battery_percent`) every time** - reproducible, not random. Confirmed
+this only manifests after several prior queries on the same long-lived
+model instance (a fresh GPU-loaded model tested with this phrase alone
+got it right 5/5) - some interaction between GPU-backend context/cache
+reuse across separate `create_chat_completion()` calls and this specific
+input, not present on CPU.
+
+**Why this was treated as disqualifying, not a tunable tradeoff**: the
+router's entire architecture exists specifically to prevent
+"confidently wrong telemetry" - the one thing worse than not knowing an
+answer. This bug reintroduces exactly that failure mode through a new
+mechanism: **a rider's earlier, unrelated queries in the same session
+measurably changing whether a later query gets the correct field** -
+worse in a sense than the known Tamil router-accuracy gaps, since those
+are at least consistent per-input, not dependent on unrelated
+conversation history. The router in the real app is loaded once and
+reused for the whole session (`main.py`), the same long-lived-instance
+pattern that reproduced this bug - it would not have been a test-only
+issue.
+
+**Fully reverted, not left half-done**: `n_gpu_layers` removed from
+`load_router_model()`, `ROUTER_GPU_LAYERS` removed from `config.py`, the
+CUDA-DLL PATH-prepend fix (which had to be added to `__init__.py` rather
+than `router.py` - `local_qa.py` also imports `llama_cpp` directly and
+isn't guaranteed to go through `router.py` first, which itself caused a
+real DLL-loading crash during testing before this bug was even found)
+removed entirely, and `llama-cpp-python` reinstalled as the CPU-only
+build (`--force-reinstall --no-deps`, confirmed via lib folder size:
+29MB vs the CUDA build's 536MB, same verification method as the earlier
+GPU-offload revert). Verified clean via 3 consecutive full test-suite
+runs (254 passing, 1 skipped, no flakes) and a diff-clean working tree
+matching the last commit exactly. Nothing from this attempt was
+committed.
+
+**Not currently planned to revisit** without a real fix for the
+cross-call state issue itself (e.g., explicitly resetting/clearing the
+model's context between independent `route()` calls, if llama-cpp-python
+exposes a way to do that) - simply re-enabling GPU offload again would
+reproduce the same bug.
+
+## Tamil TTS voice change evaluated, rejected on latency (2026-08-10)
+
+Same session as the keyword-expansion/STT-model work above - user asked
+whether the Tamil voice itself could be changed. Found and explained a
+real architectural fact first: `facebook/mms-tts-tam` (current Tamil
+voice) is a single-speaker VITS model with no built-in voice selection
+at all - not a config option to change, a structural property of the
+model. Two AI4Bharat alternatives researched:
+
+- **IndicF5** - turned out to be a voice-*cloning* model (needs a
+  reference audio clip + its transcript, not a selectable voice), which
+  raises a real consent/licensing question (the model card explicitly
+  prohibits unauthorized voice cloning) this project has no clean answer
+  to (no licensed reference Tamil voice available) - not pursued.
+- **Indic Parler-TTS** (`ai4bharat/indic-parler-tts`) - generates speech
+  from a text description, no reference audio needed, and does offer
+  genuine named voice options for Tamil ("Kavitha," "Jaya"). Gated on
+  Hugging Face (free, just requires logging in and agreeing to share
+  contact info - not a paid tier, confirmed directly before the user
+  spent time on it). User completed the access request + created a read
+  token, stored in `.env` as `HF_TOKEN` (not pasted into chat - same
+  precaution as the original Gemini key incident).
+
+**Installing it had a real side effect worth knowing about**:
+`pip install git+https://github.com/huggingface/parler-tts.git`
+downgraded the pinned `transformers==5.14.1` to `4.46.1` as a dependency
+resolution side effect. Verified the existing MMS-TTS Tamil model still
+loaded and produced correct output on the downgraded version, and the
+full test suite still passed, before concluding it was safe to proceed
+with testing - but see below, this was fully undone anyway.
+
+**Rejected on real measured latency, not voice quality** - synthesized
+the same 3 Tamil telemetry phrases with both the current MMS-TTS voice
+and both Parler-TTS voices (GPU): current MMS-TTS averaged **1.49s**;
+Parler-TTS averaged **9.46s (Kavitha)** and **5.13s (Jaya)** - a 3-8x
+latency regression per response. For a voice assistant meant to feel
+like natural conversation, several extra seconds of dead air per answer
+was judged disqualifying on its own, independent of how the voice
+actually sounds. User agreed without needing to listen to the samples.
+
+**Fully reverted**: `parler_tts` and its pulled-in dependencies
+uninstalled, `transformers` reinstalled at the pinned `5.14.1`,
+generated sample files and the comparison script deleted. Verified via
+`pip check` (clean) and the full test suite (234 passing at the time,
+matching pre-change baseline) before moving on. Nothing from this
+attempt was committed - current voice is unchanged.
+
 ## Unrelated sibling project — do not confuse
 
 There's a separate, unrelated EV ATV voice assistant project at
