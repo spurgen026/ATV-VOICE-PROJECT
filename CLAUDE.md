@@ -2009,6 +2009,72 @@ real try. Scaling up the training config toward the library's
 "production" range is not needed right now - only worth revisiting if
 real-world reliability issues show up later during heavier use.
 
+## Tamil accuracy investigation: keyword expansion shipped, dedicated STT model evaluated and parked (2026-08-10)
+
+User asked directly for ways to bring Tamil accuracy up toward English's
+level. Two approaches were tried in parallel, as requested, and compared
+head-to-head rather than picking one on intuition.
+
+- **Keyword expansion - shipped.** Added colloquial Tamil/Hindi
+  alternatives to `TELEMETRY_FIELD_KEYWORDS` (charge/சார்ஜ் for battery,
+  air/காற்று for tire pressure, hot/சூடு/சூடா/गरम/गर्म for motor
+  temperature) - the same technique that already made English routing
+  near-flawless (literal keyword matches bypass the router entirely).
+  Every candidate was tested against plausible unrelated words via
+  `_fuzzy_contains()` *before* being added, not assumed safe - repeating
+  the exact discipline from the earlier "fast" keyword incident. Real
+  collisions found and rejected: bare English "charge"/"hot"/"air" all
+  fuzzy-matched common unrelated words ("change," "shot"/"hoot,"
+  "hair"/"fair"/"pair"/"chair"/"stair") at the 0.8 threshold; Tamil
+  காத்து (spoken "air") matched காத்திரு ("wait" - a genuinely common
+  word) and காது ("ear"). Kept only what tested clean. New permanent
+  regression tests lock in both the additions and the specific collision
+  that was caught and avoided (a "please wait" phrase that must NOT
+  trigger the dropped காத்து keyword).
+- **Tamil-specialized STT model - evaluated, not integrated.**
+  Downloaded and converted `vasista22/whisper-tamil-large-v2` (fine-tuned
+  from Whisper large-v2 specifically on Tamil ASR corpora, reporting
+  6.61% WER on Common Voice / 7.5% on FLEURS per its own model card) to
+  CTranslate2 locally (`ct2-transformers-converter`, `int8_float16`) and
+  benchmarked head-to-head against the current `large-v3-turbo` on 7
+  synthesized Tamil test phrases (`compare_tamil_stt.py`, not committed -
+  same throwaway-comparison-script convention as `compare_whisper_sizes.py`).
+  Real DLL-loading gotcha hit and fixed: the standalone script imported
+  `faster_whisper` directly without triggering `stt.py`'s import-time
+  CUDA PATH-prepend fix, reproducing the exact `cublas64_12.dll not
+  found` error from "V3 hardening, round 2" - fixed by importing
+  `resort_atv_voice.stt` first for its side effect.
+  - **Result: real accuracy edge, thin evidence.** Tamil-specialized
+    model won on average similarity (0.901 vs 0.838) with comparable
+    latency (0.83s vs 0.88s), including a clear win on the long-known-hard
+    tire-pressure phrase (0.30 → 0.62). But only 7 phrases, synthesized
+    via MMS-TTS rather than real speech - and both models still garbled
+    the tire-pressure/charge phrases somewhat, plausibly confounded by
+    MMS-TTS's own known Tamil synthesis quality issues (see "Phase 5
+    hardening") rather than purely an STT comparison.
+  - **Decision: not integrated, on cost grounds not accuracy grounds.**
+    The model is Tamil-only, so using it means either running two
+    Whisper models simultaneously (this laptop's RTX 3050 is already
+    tight at 4GB, shared with the router LLM - the same constraint that
+    got the LLM-chat GPU experiment reverted earlier) or transcribing
+    every Tamil query twice (detect language with the current model,
+    re-transcribe with the Tamil one) - a direct latency tax on exactly
+    the language being optimized. Also compounds, rather than reduces,
+    the GPU-dependency risk already flagged as the top production risk
+    (Raspberry Pi 5 has no GPU at all). Given the small/synthetic
+    evaluation, this cost wasn't judged worth paying yet. Recommended
+    next step if revisited: re-run the same comparison with real human
+    Tamil speech, not synthetic TTS, before reconsidering the
+    architecture change - synthetic-only testing has repeatedly proven
+    insufficient elsewhere in this project's history.
+  - Converted model kept locally for possible future testing
+    (`wakeword_training/models_scratch/whisper-tamil-large-v2-ct2`,
+    ~1.5GB, gitignored - not committed).
+- Full test suite: 234 passing (up from 228, new regression tests for
+  this change), 21 skipped. `ruff` clean; `mypy` clean except the same
+  pre-existing, unrelated `index_documents.py` finding noted elsewhere
+  in this file.
+
 ## Unrelated sibling project — do not confuse
 
 There's a separate, unrelated EV ATV voice assistant project at
