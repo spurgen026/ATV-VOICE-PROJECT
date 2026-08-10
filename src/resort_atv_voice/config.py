@@ -468,33 +468,51 @@ TELEMETRY_FIELD_KEYWORDS = {
 VEHICLE_TERM_KEYWORDS = tuple(kw for keywords in TELEMETRY_FIELD_KEYWORDS.values() for kw in keywords)
 VEHICLE_TERM_FUZZY_THRESHOLD = 0.8
 
-# V3 hardening: LOCAL_CHAT_SYSTEM_PROMPT already told the model not to
-# invent resort amenities, and Phase 6 testing showed it did so anyway
-# ("a scenic boat ride around the lake") - the same unreliable-uncertainty
-# pattern documented for the router in Phase 2+3, where prompt wording
-# alone didn't unlock honest "I don't know" behavior at this model size.
-# Same fix as the router's grammar constraint: don't trust the LLM's
-# self-restraint, gate deterministically before generation is ever called.
-# English-only keyword match and not an exhaustive phrase list, so some
-# resort-knowledge questions will still slip through to free generation -
-# same known-limitation shape as small_talk.py's language coverage.
-RESORT_KNOWLEDGE_TRIGGERS = (
-    "activity", "activities", "recommend", "sightsee", "restaurant",
-    "dining", "dinner", "lunch", "breakfast", "menu", "book a table",
-    "reservation", "hotel", "amenity", "amenities", "pool", "spa",
-    "trail", "hike", "hiking", "boat ride", "lake", "waterfall",
-    "things to do", "what should i do", "where can i",
-)
+# Hybrid cloud/local split (2026-08-10): telemetry (battery/speed/tire/
+# motor) and small talk stay 100% local and deterministic, unchanged by
+# this - see local_qa.answer_query(). Only the remaining fallback (
+# anything that isn't small talk or a telemetry match - weather, general
+# knowledge, casual chat) now goes to Gemini instead of the local
+# chat_llm/tamil_chat_llm models. Two prior local-generation attempts
+# (V3 hardening round 2 continued; the dedicated Tamil-Llama-7B model)
+# both kept fabricating things despite prompt instructions not to
+# (invented resort amenities, a fabricated speed reading, English
+# answered in Tamil) - the same unreliable-uncertainty pattern this
+# codebase has hit repeatedly at small local model sizes. Gemini is a
+# materially more capable model and V2's own history (RAG_SYSTEM_PROMPT
+# above) already showed it reliably following an explicit "say you don't
+# know" instruction, so this prompt trusts it to say so honestly for
+# resort-specific questions it has no real knowledge of, rather than
+# gating those with a separate keyword list first the way the local-only
+# version had to. Explicitly told not to answer telemetry questions
+# (defense in depth only - local_qa.py's router+keyword matching already
+# never lets a telemetry-classified question reach this function at all).
+CLOUD_CHAT_SYSTEM_PROMPT = """You are the voice of a resort ATV - a friendly,
+easygoing companion for the guest riding you, not a generic assistant.
+Speak warmly and conversationally, like a knowledgeable friend, but keep
+answers brief since they'll be spoken aloud. Do not add closing filler
+("let me know if you need anything else", "ready whenever you are").
+You do not have any real information about this specific resort's
+activities, dining, amenities, or bookings - if asked about those, say so
+honestly instead of guessing or inventing details. You can answer general
+questions (weather, general knowledge, casual conversation) using your own
+knowledge. You never have access to this vehicle's live telemetry
+(battery, speed, tire pressure, motor temperature) - if a question like
+that somehow reaches you, say you don't have that information rather than
+guessing a number.
+Respond in {language_name}, matching the language the rider spoke in."""
 
-# Rewritten colloquial 2026-08-08, same caveat as TELEMETRY_FIELD_PHRASES
-# above - not native-verified. Kept the respectful आप/உங்கள் address form
-# used elsewhere in this app (a resort guest, not a close friend) -
-# colloquial vocabulary/structure, not informal-address - rather than
-# switching to तुम/உன் which would read as presumptuous for a guest.
-RESORT_KNOWLEDGE_UNAVAILABLE_RESPONSE = {
-    "en": "I don't have real information about resort activities or amenities yet - I can only help with your vehicle for now.",
-    "hi": "रिसॉर्ट की एक्टिविटीज़ या सुविधाओं के बारे में मुझे अभी सही जानकारी नहीं है - फिलहाल मैं बस आपकी गाड़ी के बारे में मदद कर सकता हूं।",
-    "ta": "ரிசார்ட் ஆக்டிவிட்டீஸ் பத்தி இன்னும் சரியா எனக்குத் தெரியல - தற்போதைக்கு உங்க வண்டி பத்தி மட்டும்தான் உதவ முடியும்.",
+# Fallback for when the Gemini call itself fails (no internet, API error,
+# blocked response) - see cloud_chat.py. Deliberately does NOT fall back
+# to the local chat models on failure - those are the exact models this
+# whole hybrid split exists to get away from, so a network failure should
+# read as an honest "can't reach it right now," not silently reintroduce
+# the fabrication risk. Not native-verified, same caveat as this
+# project's other hand-written Hindi/Tamil text throughout.
+CLOUD_CHAT_UNAVAILABLE_RESPONSE = {
+    "en": "I can't reach the internet right now, so I can't help with that - I can still help with your vehicle though.",
+    "hi": "अभी मुझे इंटरनेट नहीं मिल रहा, इसलिए इसमें मदद नहीं कर सकता - लेकिन आपकी गाड़ी के बारे में अब भी मदद कर सकता हूं।",
+    "ta": "இப்போ இன்டர்நெட் கிடைக்கல, அதனால இதுக்கு உதவ முடியாது - ஆனா உங்க வண்டி பத்தி நான் இன்னும் உதவ முடியும்.",
 }
 
 # V3 Phase 5: Tamil/Hindi TTS. Piper's official voice catalog has zero

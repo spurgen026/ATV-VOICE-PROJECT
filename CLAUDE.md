@@ -2184,6 +2184,139 @@ generated sample files and the comparison script deleted. Verified via
 matching pre-change baseline) before moving on. Nothing from this
 attempt was committed - current voice is unchanged.
 
+## Version 4: hybrid local/cloud split - Gemini for chat, everything else stays local (2026-08-10)
+
+**A deliberate, user-directed reversal of one piece of V3's "everything
+local, no cloud calls" requirement** - not a full reversion to V2. User's
+own framing: "ik that it breaks the entire no cloud agenda but tell me
+whats on your mind." Scope is narrow and explicit: telemetry (battery,
+speed, tire pressure, motor temperature) and small talk stay exactly as
+local and deterministic as they've always been, byte-for-byte unchanged
+by this - only the final fallback (anything that isn't small talk or a
+telemetry match: weather, general knowledge, casual conversation) now
+calls Gemini instead of a local chat model.
+
+### Why: two prior local-generation attempts both failed the same way
+
+`chat_llm` (Qwen2.5-3B) and `tamil_chat_llm` (Tamil-Llama-7B, added
+specifically because Qwen's Tamil generation was weak even on clean
+input) both kept fabricating things despite explicit system-prompt
+instructions not to - invented resort amenities, a fabricated speed
+reading, a fabricated battery percentage with an unrelated movie
+reference, English questions answered in Tamil. This is the same
+unreliable-uncertainty pattern this codebase has hit repeatedly at small
+local model sizes (the router's Phase 2+3 "don't guess" instruction,
+this same problem twice for chat). An earlier session already tried
+removing free-form generation entirely (fixed honest fallback message
+for everything) and got reverted at the user's request - safe, but felt
+limited for genuinely answerable questions like weather. This time,
+instead of another local prompt-tuning attempt or removing generation
+outright, the fix is swapping *which* model generates: Gemini is
+materially more capable, and V2's own history (`RAG_SYSTEM_PROMPT`)
+already showed it reliably following an explicit "say you don't know"
+instruction - re-verified directly for this exact use case, not assumed:
+asked live "What activities does the resort have? Recommend something
+fun," got "Honestly, I don't have the details on this resort's activity
+lineup - you'll want to check in with the front desk," not an invented
+amenity.
+
+### What changed
+
+- **New module `cloud_chat.py`** - `answer_via_gemini(question, language)`,
+  the only function in the live app that ever makes a network call.
+  Reuses V2's established patterns (`gemini_client.client`,
+  `GEMINI_CHAT_MODEL`, the `GEMINI_ERRORS`/`_EmptyGeminiResponse`
+  try/except fallback shape from `rag.py`) rather than reinventing them,
+  but is a standalone module, not built on `rag.py` itself - this isn't
+  document-grounded RAG, just a direct chat call, and `rag.py` stays
+  parked/unused as before.
+- **`local_qa.answer_query()`** - dropped `chat_llm`/`tamil_chat_llm`/
+  `history` parameters entirely; the final fallback is now one line,
+  `return answer_via_gemini(question, language)`. Everything above it
+  (small talk, keyword-priority telemetry matching, router + vehicle-term
+  safety net) is **completely untouched** - verified by diff, not just
+  by claim, since keeping telemetry fast/local/unchanged was the user's
+  explicit, repeated requirement for this change.
+- **`config.py`**: `RESORT_KNOWLEDGE_TRIGGERS` (the keyword gate that
+  used to block local generation on resort-activity questions before it
+  ever ran) removed entirely - no longer needed since Gemini's own
+  system-prompt instruction handles this case reliably (see above), and
+  every non-telemetry question now goes through the same single path
+  regardless of topic. `RESORT_KNOWLEDGE_UNAVAILABLE_RESPONSE` renamed
+  to `CLOUD_CHAT_UNAVAILABLE_RESPONSE` and repurposed as the
+  Gemini-call-failure fallback (no internet, API error, blocked
+  response) - **deliberately does NOT fall back to the local chat
+  models** on failure, since those are the exact source of the
+  fabrication problem this change exists to get away from; a network
+  failure reads as an honest "can't reach it right now," not a silent
+  reintroduction of hallucination risk. New `CLOUD_CHAT_SYSTEM_PROMPT`,
+  explicitly telling Gemini it has no real resort-specific knowledge and
+  no access to live vehicle telemetry (defense in depth only - the
+  router+keyword matching above already guarantees a telemetry-classified
+  question never reaches this function in the first place).
+- **`main.py`** - no longer loads `chat_llm`/`tamil_chat_llm`
+  (`load_chat_model()`/`load_tamil_chat_model()` calls removed) and no
+  longer tracks per-conversation `history` (not requested for this
+  change - scope kept to what was asked, can be added later if wanted).
+  Two fewer multi-GB models resident in memory at startup.
+- **Parked, not deleted**: `router.py` still has `generate_chat_reply()`,
+  `load_chat_model()`, `load_tamil_chat_model()` - same "parked, not
+  deleted" convention as `rag.py`/`gemini_client.py`, kept in case a
+  safer local approach is worth revisiting later. `tests/test_router.py`
+  still tests `generate_chat_reply()` directly via a fake model, and
+  `conftest.py`'s `chat_llm`/`tamil_chat_llm` fixtures are left in place
+  (zero cost unless a test actually requests them, which none currently
+  do).
+
+### Testing
+
+New `tests/test_cloud_chat.py` - `answer_via_gemini()` tested directly
+with a mocked Gemini client (no real network/API key needed): success
+path, empty-response handling (the SDK types `resp.text` as `Optional`,
+a real possibility per `rag.py`'s own mypy-driven fix), a genuine API
+failure, and that the failure fallback is picked per-language rather
+than always English. `tests/test_local_qa.py`'s `TestGeminiDispatch`
+verifies the dispatch wiring itself (mocked `route()` and
+`answer_via_gemini()`, no real models needed). The `@pytest.mark.slow`
+`TestAnswerQueryEndToEnd` class gained an `autouse` fixture mocking
+`answer_via_gemini()` for every test in the class, specifically so a
+future test added to that class can't accidentally make a real network
+call during `--run-slow` runs. Full suite: **259 passing, 1 documented
+skip** (the long-standing known-flaky Tamil weather router case,
+unrelated to this change).
+
+### Verified live, not just via tests
+
+Direct calls through the real `answer_query()` path, real router model,
+real Gemini API:
+- Telemetry: `0.01s`, `"The battery is at 78 percent."` - confirmed
+  byte-identical behavior and speed to before this change.
+- English weather question: real Gemini answer in the established
+  companion voice, `8.57s` (real cloud round-trip).
+- Tamil weather question: real Gemini answer, correctly in Tamil script,
+  `6.35s`.
+- Resort-activity question ("what activities does the resort have,
+  recommend something fun"): honest decline instead of an invented
+  amenity - the exact failure mode this whole change exists to fix,
+  confirmed fixed, not assumed.
+
+### Known tradeoffs, stated plainly
+
+- **No longer accurate to say "runs fully offline"** - true only for
+  telemetry and small talk now. Worth being precise about this framing
+  going forward rather than letting it blur.
+- Non-telemetry answers now cost 5-9s (cloud round-trip) instead of the
+  local models' latency - a real UX cost, accepted in exchange for
+  reliability (no more fabrication) on exactly the questions that most
+  needed it.
+- Gemini API calls have a real (if likely low-volume, given telemetry/
+  small-talk questions never reach this path) per-request cost - not
+  free at scale, though the user already has a Gemini subscription from
+  V2.
+- Conversation memory (`history`) was dropped along with the local chat
+  models, not carried over to the Gemini path - not requested for this
+  change, a possible follow-up if wanted later.
+
 ## Unrelated sibling project — do not confuse
 
 There's a separate, unrelated EV ATV voice assistant project at

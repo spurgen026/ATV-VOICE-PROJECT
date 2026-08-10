@@ -122,102 +122,66 @@ class TestDetectRequestedFields:
         assert fields == ["battery_percent", "speed_kmh"]
 
 
-def test_resort_knowledge_trigger_catches_activity_questions():
-    from resort_atv_voice.config import RESORT_KNOWLEDGE_TRIGGERS
+class TestGeminiDispatch:
+    """Hybrid split (2026-08-10): anything that isn't small talk or a
+    telemetry match reaches Gemini via cloud_chat.answer_via_gemini() -
+    see local_qa.answer_query()'s docstring. Fast test: mocks route() and
+    answer_via_gemini() directly so this verifies the dispatch wiring
+    itself without needing a real model or network call - a regression
+    here (e.g. the fallback silently calling something else, or not being
+    reached at all) would be easy to miss otherwise."""
 
-    assert any(t in "what activities are there".lower() for t in RESORT_KNOWLEDGE_TRIGGERS)
-
-
-def test_resort_knowledge_trigger_does_not_catch_telemetry_questions():
-    from resort_atv_voice.config import RESORT_KNOWLEDGE_TRIGGERS
-
-    assert not any(t in "what is my battery percent".lower() for t in RESORT_KNOWLEDGE_TRIGGERS)
-
-
-class TestChatModelDispatch:
-    """Tamil chat gets a dedicated third model (see TAMIL_CHAT_MODEL_REPO
-    in config.py - Qwen's Tamil generation was genuinely weak even on
-    clean input). Fast test: mocks route() and generate_chat_reply()
-    directly so this verifies the dispatch wiring itself without needing
-    to load any real model - a regression here (e.g. the language == "ta"
-    check silently flipped or dropped) would be easy to miss otherwise."""
-
-    def test_tamil_language_dispatches_to_tamil_chat_llm(self, monkeypatch):
+    def test_chat_action_dispatches_to_gemini(self, monkeypatch):
         import resort_atv_voice.local_qa as local_qa_module
 
         monkeypatch.setattr(local_qa_module, "route", lambda llm, grammar, q: {"action": "chat"})
         captured = {}
-        monkeypatch.setattr(
-            local_qa_module,
-            "generate_chat_reply",
-            lambda llm, query, history, language: captured.setdefault("llm", llm) or "reply",
-        )
 
-        chat_llm, tamil_chat_llm = object(), object()
-        answer_query(
-            router_llm=object(),
-            grammar=object(),
-            cache=TelemetryCache(),
-            question="ஏதோ ஒரு கேள்வி",
-            chat_llm=chat_llm,
-            tamil_chat_llm=tamil_chat_llm,
-            language="ta",
-        )
-        assert captured["llm"] is tamil_chat_llm
+        def fake_answer_via_gemini(question, language):
+            captured["call"] = (question, language)
+            return "reply"
 
-    def test_english_language_dispatches_to_chat_llm_not_tamil(self, monkeypatch):
-        import resort_atv_voice.local_qa as local_qa_module
+        monkeypatch.setattr(local_qa_module, "answer_via_gemini", fake_answer_via_gemini)
 
-        monkeypatch.setattr(local_qa_module, "route", lambda llm, grammar, q: {"action": "chat"})
-        captured = {}
-        monkeypatch.setattr(
-            local_qa_module,
-            "generate_chat_reply",
-            lambda llm, query, history, language: captured.setdefault("llm", llm) or "reply",
-        )
-
-        chat_llm, tamil_chat_llm = object(), object()
-        answer_query(
+        response = answer_query(
             router_llm=object(),
             grammar=object(),
             cache=TelemetryCache(),
             question="some random question",
-            chat_llm=chat_llm,
-            tamil_chat_llm=tamil_chat_llm,
             language="en",
         )
-        assert captured["llm"] is chat_llm
+        assert response == "reply"
+        assert captured["call"] == ("some random question", "en")
 
-    def test_tamil_chat_llm_falls_back_to_chat_llm_when_not_provided(self, monkeypatch):
-        # Same fallback pattern as chat_llm -> router_llm - callers that
-        # only load two models (e.g. quick scripts) shouldn't break.
+    def test_language_is_passed_through_to_gemini(self, monkeypatch):
         import resort_atv_voice.local_qa as local_qa_module
 
         monkeypatch.setattr(local_qa_module, "route", lambda llm, grammar, q: {"action": "chat"})
         captured = {}
-        monkeypatch.setattr(
-            local_qa_module,
-            "generate_chat_reply",
-            lambda llm, query, history, language: captured.setdefault("llm", llm) or "reply",
-        )
 
-        chat_llm = object()
+        def fake_answer_via_gemini(question, language):
+            captured["language"] = language
+            return "reply"
+
+        monkeypatch.setattr(local_qa_module, "answer_via_gemini", fake_answer_via_gemini)
+
         answer_query(
             router_llm=object(),
             grammar=object(),
             cache=TelemetryCache(),
             question="ஏதோ ஒரு கேள்வி",
-            chat_llm=chat_llm,
             language="ta",
         )
-        assert captured["llm"] is chat_llm
+        assert captured["language"] == "ta"
 
 
 @pytest.mark.slow
 class TestAnswerQueryEndToEnd:
     """Real integration tests through the full answer_query() path - small
-    talk -> router -> vehicle-term safety net -> CAN cache / chat
-    generation. Slow: loads the router and chat LLMs."""
+    talk -> router -> vehicle-term safety net -> CAN cache / Gemini
+    dispatch. Slow: loads the real router LLM. The Gemini call itself is
+    mocked (see test_cloud_chat.py for that logic tested directly) so
+    this suite stays network-free and fast even with --run-slow."""
 
     @pytest.fixture
     def cache(self):
@@ -228,50 +192,42 @@ class TestAnswerQueryEndToEnd:
         c.update("tire_pressure_psi", 32)
         return c
 
-    def test_telemetry_question_answers_from_cache_not_the_model(
-        self, router_llm, router_grammar, chat_llm, cache
-    ):
-        response = answer_query(
-            router_llm, router_grammar, cache, "What's the battery percentage?", chat_llm=chat_llm
+    @pytest.fixture(autouse=True)
+    def _no_real_gemini_calls(self, monkeypatch):
+        # Autouse so it's impossible to forget on a new test in this class
+        # and accidentally make a real network call during --run-slow.
+        import resort_atv_voice.local_qa as local_qa_module
+
+        monkeypatch.setattr(
+            local_qa_module, "answer_via_gemini", lambda question, language: "MOCKED_GEMINI_REPLY"
         )
+
+    def test_telemetry_question_answers_from_cache_not_the_model(self, router_llm, router_grammar, cache):
+        response = answer_query(router_llm, router_grammar, cache, "What's the battery percentage?")
         assert "78" in response
 
-    def test_weather_question_never_states_a_fake_vehicle_reading(
-        self, router_llm, router_grammar, chat_llm, cache
+    def test_weather_question_dispatches_to_gemini_never_states_a_fake_vehicle_reading(
+        self, router_llm, router_grammar, cache
     ):
-        # The exact case the safety net exists for - regardless of what
-        # the chat model's answer actually says, it must never claim a
-        # specific telemetry number for an unrelated question.
+        # The exact case the vehicle-term safety net exists for - this
+        # used to be answered by an unguarded local chat model that
+        # fabricated a speed reading. Now it should reach the (mocked)
+        # Gemini path instead of ever touching the CAN cache.
         response = answer_query(
-            router_llm,
-            router_grammar,
-            cache,
-            "வெளியா வதர் எப்படி இருக்கு?",
-            chat_llm=chat_llm,
-            language="ta",
+            router_llm, router_grammar, cache, "வெளியா வதர் எப்படி இருக்கு?", language="ta"
         )
-        assert "பூஜ்யம்" not in response  # the (fabricated) speed reading this used to produce
+        assert response == "MOCKED_GEMINI_REPLY"
 
-    def test_thanks_is_answered_by_small_talk_not_the_router(
-        self, router_llm, router_grammar, chat_llm, cache
-    ):
-        response = answer_query(
-            router_llm, router_grammar, cache, "thank you", chat_llm=chat_llm
-        )
+    def test_thanks_is_answered_by_small_talk_not_the_router(self, router_llm, router_grammar, cache):
+        response = answer_query(router_llm, router_grammar, cache, "thank you")
         assert response == "You're welcome!"
 
-    def test_missing_cache_value_gives_the_unavailable_response_not_a_crash(
-        self, router_llm, router_grammar, chat_llm
-    ):
+    def test_missing_cache_value_gives_the_unavailable_response_not_a_crash(self, router_llm, router_grammar):
         empty_cache = TelemetryCache()
-        response = answer_query(
-            router_llm, router_grammar, empty_cache, "What's the battery percentage?", chat_llm=chat_llm
-        )
+        response = answer_query(router_llm, router_grammar, empty_cache, "What's the battery percentage?")
         assert "don't have" in response.lower()
 
-    def test_compound_question_answers_every_field_not_just_the_first(
-        self, router_llm, router_grammar, chat_llm, cache
-    ):
+    def test_compound_question_answers_every_field_not_just_the_first(self, router_llm, router_grammar, cache):
         # The exact live-captured question that used to answer only
         # "The battery is at 78 percent," silently dropping tire
         # pressure and speed.
@@ -280,7 +236,6 @@ class TestAnswerQueryEndToEnd:
             router_grammar,
             cache,
             "Can you tell me about the battery, the tire pressure and the speed I am going on?",
-            chat_llm=chat_llm,
         )
         assert "78" in response
         assert "32" in response
@@ -296,7 +251,7 @@ class TestAnswerQueryEndToEnd:
         ids=["ta battery misroute (was speed/motor)", "ta tire misroute (was battery)", "ta speed (was hallucinated)"],
     )
     def test_keyword_match_overrides_a_flaky_router_pick(
-        self, router_llm, router_grammar, chat_llm, tamil_chat_llm, cache, question, expected_substring
+        self, router_llm, router_grammar, cache, question, expected_substring
     ):
         # Live-captured 2026-08-08: the router itself picked the wrong
         # field for the first two, and the vehicle-term safety net
@@ -306,13 +261,5 @@ class TestAnswerQueryEndToEnd:
         # a fake speed reading. All three are now answered directly from
         # a literal keyword match, bypassing the router's field pick
         # entirely rather than trusting it.
-        response = answer_query(
-            router_llm,
-            router_grammar,
-            cache,
-            question,
-            chat_llm=chat_llm,
-            tamil_chat_llm=tamil_chat_llm,
-            language="ta",
-        )
+        response = answer_query(router_llm, router_grammar, cache, question, language="ta")
         assert expected_substring in response

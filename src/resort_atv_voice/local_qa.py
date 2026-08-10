@@ -3,20 +3,17 @@ import difflib
 from llama_cpp import Llama, LlamaGrammar
 
 from .can_telemetry import TelemetryCache, describe
+from .cloud_chat import answer_via_gemini
 from .config import (
     DEFAULT_LANGUAGE,
     LANGUAGE_NAMES,
-    RESORT_KNOWLEDGE_TRIGGERS,
-    RESORT_KNOWLEDGE_UNAVAILABLE_RESPONSE,
     TELEMETRY_FIELD_KEYWORDS,
     TELEMETRY_UNAVAILABLE_RESPONSE,
     VEHICLE_TERM_FUZZY_THRESHOLD,
     VEHICLE_TERM_KEYWORDS,
 )
-from .router import generate_chat_reply, route
+from .router import route
 from .small_talk import try_small_talk_answer
-
-History = list[tuple[str, str]]
 
 
 def _fuzzy_contains(token: str, keyword: str, threshold: float) -> bool:
@@ -85,41 +82,31 @@ def answer_query(
     grammar: LlamaGrammar,
     cache: TelemetryCache,
     question: str,
-    chat_llm: Llama | None = None,
-    tamil_chat_llm: Llama | None = None,
-    history: History | None = None,
     language: str = DEFAULT_LANGUAGE,
 ) -> str:
-    """V3's fully-local answer path: small talk -> grammar-constrained
-    router -> either a CAN cache lookup (get_telemetry) or a free-form
-    local chat reply (chat). Replaces V2's Gemini-backed answer_query() in
-    the live app - no cloud call anywhere in this function.
-
-    router_llm and chat_llm are deliberately different model instances
-    (V3 hardening round 2) - the router is a strict classification task
-    the small 1.5B model already handles well, chat is open-ended
-    generation where a bigger model (3B) gives noticeably less rambling,
-    more concise answers. chat_llm defaults to router_llm so this still
-    works if a caller only has one model loaded (e.g. quick scripts/tests).
-
-    tamil_chat_llm is a third, optional model used only for Tamil chat
-    (live testing found Qwen's Tamil generation genuinely weak even on
-    clean input - see TAMIL_CHAT_MODEL_REPO in config.py). Falls back to
-    chat_llm when not provided, same pattern as chat_llm falling back to
-    router_llm.
+    """Hybrid answer path (2026-08-10): small talk -> grammar-constrained
+    router -> either a CAN cache lookup (get_telemetry, fully local and
+    deterministic) or a Gemini chat reply (anything else). Telemetry and
+    small talk never touch the network, regardless of connectivity - only
+    the final fallback (weather, general knowledge, casual chat) makes a
+    cloud call, via cloud_chat.answer_via_gemini(). See
+    CLOUD_CHAT_SYSTEM_PROMPT in config.py for the reasoning: two prior
+    local-generation attempts (a dedicated 3B chat model, then a
+    Tamil-specialized 7B model) both kept fabricating things despite
+    explicit prompt instructions not to, the same unreliable-uncertainty
+    pattern this codebase has hit repeatedly at small local model sizes -
+    Gemini replaces that generation entirely rather than being tuned
+    further, while the actual vehicle-safety-critical path (telemetry)
+    stays exactly as local and deterministic as it always was.
 
     small_talk.py now matches Hindi/Tamil phrases too, not just English -
     keyword-only per detected language, hand-written and not verified by a
     native speaker, so unexpected phrasing can still miss and fall through
-    to the router/chat path below (which still answers correctly, just
+    to the router/Gemini path below (which still answers correctly, just
     without the canned fast-path response).
     """
     if language not in LANGUAGE_NAMES:
         language = DEFAULT_LANGUAGE
-    if chat_llm is None:
-        chat_llm = router_llm
-    if tamil_chat_llm is None:
-        tamil_chat_llm = chat_llm
 
     small_talk = try_small_talk_answer(question, language)
     if small_talk:
@@ -194,14 +181,9 @@ def answer_query(
             )
         return describe(router_target, value, language)
 
-    # Deterministic gate, checked before the free-form model ever runs -
-    # see RESORT_KNOWLEDGE_TRIGGERS in config.py for why prompting alone
-    # wasn't trusted to stop fabricated amenities.
-    lowered = question.lower()
-    if any(trigger in lowered for trigger in RESORT_KNOWLEDGE_TRIGGERS):
-        return RESORT_KNOWLEDGE_UNAVAILABLE_RESPONSE.get(
-            language, RESORT_KNOWLEDGE_UNAVAILABLE_RESPONSE[DEFAULT_LANGUAGE]
-        )
-
-    active_chat_llm = tamil_chat_llm if language == "ta" else chat_llm
-    return generate_chat_reply(active_chat_llm, question, history, language)
+    # Not a clear small-talk or telemetry match - the one place this
+    # function ever touches the network. See this function's docstring
+    # and CLOUD_CHAT_SYSTEM_PROMPT in config.py for why Gemini handles
+    # this instead of a local model, and cloud_chat.py for the offline/
+    # failure fallback.
+    return answer_via_gemini(question, language)
