@@ -18,6 +18,14 @@ def test_thanks_matches(language):
     assert try_small_talk_answer(THANKS[language], language) is not None
 
 
+@pytest.mark.parametrize("transcript", ["Nantri", "Nandri.", "nandri"])
+def test_thanks_matches_phonetic_transliteration_detected_as_english(transcript):
+    # Live-captured 2026-08-10: Tamil "நன்றி" spoken but detected as
+    # English by STT gets transliterated phonetically into Latin script -
+    # the literal Tamil-script trigger alone never catches this case.
+    assert try_small_talk_answer(transcript, "en") is not None
+
+
 @pytest.mark.parametrize("language", ["en", "hi", "ta"])
 def test_identity_matches(language):
     assert try_small_talk_answer(IDENTITY[language], language) is not None

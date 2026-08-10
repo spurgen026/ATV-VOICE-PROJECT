@@ -25,7 +25,13 @@ GREETINGS = {
     "ta": ("வணக்கம்",),
 }
 THANKS = {
-    "en": ("thank", "appreciate it", "you're the best", "good job", "well done"),
+    # "nandri"/"nantri": found live 2026-08-10 - Tamil "நன்றி" (thanks)
+    # spoken but detected as English by STT gets transliterated
+    # phonetically into Latin script, so the literal Tamil-script trigger
+    # below never matches. Checked for substring collisions with common
+    # English words before adding (none found) - same discipline as the
+    # keyword false-positive checks in config.py.
+    "en": ("thank", "appreciate it", "you're the best", "good job", "well done", "nandri", "nantri"),
     "hi": ("धन्यवाद", "शुक्रिया"),
     "ta": ("நன்றி",),
 }
